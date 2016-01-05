@@ -1,6 +1,6 @@
 /*
  atmega128.c a wrapper for avr.c simulating an ATmega128
- * 
+ *
  Copyright (C) 2015  Julian Ingram
 
  This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@
  */
 
 #include "atmega128.h"
+#include "avr_sreg.h"
 
 #include "jihex.h"
 
@@ -29,54 +30,135 @@ void atmega128_pmem_write_byte(void* const pmem, const uint32_t address,
     avr_pmem_write_byte((struct avr_pmem*) pmem, address, data);
 }
 
-void atmega128_tick(struct atmega128 * const mega)
+void atmega128_tick(struct atmega128* const mega)
 {
     avr_tick(&mega->avr);
+}
+
+void atmega128_set_rxc0(struct atmega128* const mega)
+{
+    mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] |= (1 << 7);
+    if((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 7)) != 0)
+    { // interrupt is enabled
+        avr_interrupt(&mega->avr, ATMEGA128_INT_VECT_USART0_RXC);
+    }
+}
+
+void atmega128_set_txc0(struct atmega128* const mega)
+{
+    if((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 6)) != 0)
+    { // interrupt is enabled
+        if (avr_interrupt(&mega->avr, ATMEGA128_INT_VECT_USART0_TXC) == 0)
+        { // if interupts are disabled globally
+            mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] |= (1 << 6);
+        }
+    }
+    else
+    {
+        mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] |= (1 << 6);
+    }
+}
+
+void atmega128_set_udre0(struct atmega128* const mega)
+{
+    if((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 5)) != 0)
+    { // interrupt is enabled
+        avr_interrupt(&mega->avr, ATMEGA128_INT_VECT_USART0_UDRE);
+    }
 }
 
 // this is called externally to write to the uart
 
 void atmega128_uart0_write(struct atmega128 * const mega, const uint8_t value)
 {
-    switch (mega->uart0_rx_fifo_state)
-    {
-    case 0: // value into udr0
-        mega->avr.dmem.mem[ATMEGA128_UDR0_LOC] = value;
-        ++mega->uart0_rx_fifo_state;
-        // set RXC0
-        avr_dmem_write(&mega->avr.dmem, ATMEGA128_UCSR0A_LOC,
-                       avr_dmem_read(&mega->avr.dmem,
-                                     ATMEGA128_UCSR0A_LOC) | (1 << 7));
-        break;
-    case 1: // value goes into buffer
-        mega->uart0_rx_fifo = value;
-        ++mega->uart0_rx_fifo_state;
-        break;
+    if ((avr_dmem_read(&mega->avr.dmem, ATMEGA128_UCSR0B_LOC) & (1 << 4)) != 0)
+    { // receive enabled
+        switch (mega->uart0_rx_fifo_state)
+        {
+        case 0: // value into udr0
+            mega->avr.dmem.mem[ATMEGA128_UDR0_LOC] = value;
+            ++mega->uart0_rx_fifo_state;
+            atmega128_set_rxc0(mega);
+            break;
+        case 1: // value goes into buffer
+            mega->uart0_rx_fifo = value;
+            mega->uart0_rx_errs = 0;
+            ++mega->uart0_rx_fifo_state;
+            break;
+        default:
+            // TODO: set DOR flag
+            break;
+        }
     }
 }
 
 void atmega128_ucsr0a_write_cb(void* arg, uint8_t value)
-{ // this needs to check to see if there is data in the udr rx buffer and set
-    // RXC if true
-    struct atmega128* mega = (struct atmega128*) arg;
-    if (mega->uart0_rx_fifo_state != 0)
+{
+    struct atmega128* const mega = (struct atmega128*) arg;
+    // TXC0 is cleared by writing a 1, all other bits in this reg are automatic
+    if ((value & (1 << 6)) != 0)
     {
-        value |= 1 << 7;
+       mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] &= ~(1 << 6);
     }
-    mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] = value;
+}
+
+void atmega128_ucsr0b_write_cb(void* arg, uint8_t value)
+{
+    struct atmega128* const mega = (struct atmega128*) arg;
+
+    if ((value & (1 << 4)) == 0)
+    { // RXEN cleared, flush rx fifo
+        mega->uart0_rx_fifo_state = 0;
+        // clear RXC
+        mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] &= ~(1 << 7);
+    }
+    // check if interrupt enables are being turned on, if they are then trigger
+    // interrupts if flags set
+    if(((value & (1 << 7)) != 0) &&
+        ((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 7)) == 0) &&
+        ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 7)) != 0))
+    { // interrupt is enabled and flag is set
+        if (avr_interrupt(&mega->avr, ATMEGA128_INT_VECT_USART0_RXC))
+        {
+            mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] &= ~(1 << 7);
+        }
+    }
+    else if(((value & (1 << 6)) != 0) &&
+        ((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 6)) == 0) &&
+        ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 6)) != 0))
+    { // interrupt is enabled and flag is set
+        if (avr_interrupt(&mega->avr, ATMEGA128_INT_VECT_USART0_TXC) != 0)
+        {
+            mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] &= ~(1 << 6);
+        }
+    }
+    else if(((value & (1 << 5)) != 0) &&
+        ((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 5)) == 0) &&
+        ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 5)) != 0))
+    { // interrupt is enabled and flag is set
+        avr_interrupt(&mega->avr, ATMEGA128_INT_VECT_USART0_UDRE);
+    }
+
+    mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] = value;
 }
 
 uint8_t atmega128_udr0_read_cb(void* arg, uint8_t value)
 {
-    struct atmega128* mega = (struct atmega128*) arg;
+    struct atmega128* const mega = (struct atmega128*) arg;
     if (mega->uart0_rx_fifo_state > 0)
     { // data is present
         if (mega->uart0_rx_fifo_state == 2)
-        { // move fifo byte to udr0
+        { // move fifo byte to udr0 and the errors along with it
             mega->avr.dmem.mem[ATMEGA128_UDR0_LOC] = mega->uart0_rx_fifo;
+            mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] =
+              (mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & 0xE3) |
+              (mega->uart0_rx_errs & 0x1C);
+            // trigger RXC interrupt
+            avr_interrupt(&mega->avr, ATMEGA128_INT_VECT_USART0_RXC);
         }
         else
         {
+            // clear RXC
             mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] &= ~(1 << 7);
         }
         --mega->uart0_rx_fifo_state;
@@ -86,10 +168,39 @@ uint8_t atmega128_udr0_read_cb(void* arg, uint8_t value)
 
 void atmega128_udr0_write_cb(void* arg, uint8_t value)
 {
-    struct atmega128* mega = (struct atmega128*) arg;
+    struct atmega128* const mega = (struct atmega128*) arg;
     mega->uart0_write_cb(mega->uart0_write_cb_arg, value);
-    // set UDRE0 and TXC0
-    mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] |= 3 << 5;
+    // trigger interrupts
+    atmega128_set_txc0(mega);
+    atmega128_set_udre0(mega);
+}
+
+void atmega128_sreg_write_cb(void* arg, uint8_t value)
+{
+    struct atmega128* const mega = (struct atmega128*) arg;
+    // check if enabling interrupts
+    if (((value & AVR_SREG_INTERRUPT_MASK) != 0) &&
+       ((mega->avr.dmem.mem[ATMEGA128_SREG_LOC] & AVR_SREG_INTERRUPT_MASK) ==
+       0))
+    { // check all interrupts to see if flags set
+        if(((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 7)) != 0) &&
+            ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 7)) != 0))
+        { // interrupt is enabled and flag is set
+            avr_interrupt_nocheck(&mega->avr, ATMEGA128_INT_VECT_USART0_RXC);
+        }
+        else if(((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 6)) != 0) &&
+            ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 6)) != 0))
+        { // interrupt is enabled and flag is set
+            mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] &= ~(1 << 6);
+            avr_interrupt_nocheck(&mega->avr, ATMEGA128_INT_VECT_USART0_TXC);
+        }
+        else if(((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 5)) != 0) &&
+            ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 5)) != 0))
+        { // interrupt is enabled and flag is set
+            avr_interrupt_nocheck(&mega->avr, ATMEGA128_INT_VECT_USART0_UDRE);
+        }
+    }
+    mega->avr.dmem.mem[ATMEGA128_SREG_LOC] = value;
 }
 
 void atmega128_init_regs(struct avr_dmem * const dmem)
@@ -109,22 +220,26 @@ void atmega128_reinit(struct atmega128 * const mega)
            sizeof (*mega->avr.pmem.mem));
 
     atmega128_init_regs(&mega->avr.dmem);
-    
+
     mega->avr.pc = 0;
 }
 
-void atmega128_init(struct atmega128 * const mega,
-                     void(* const uart0_write_cb) (void*, uint8_t),
-                     void* const uart0_write_cb_arg)
+void atmega128_sleep_cb(void* arg, uint8_t sleep)
 {
-    mega->uart0_write_cb = uart0_write_cb;
-    mega->uart0_write_cb_arg = uart0_write_cb_arg;
+    struct atmega128* mega = (struct atmega128*) arg;
+    mega->sleep_cb(mega->sleep_cb_arg, sleep);
+}
+
+void atmega128_init(struct atmega128* const mega)
+{
     mega->uart0_rx_fifo_state = 0;
     mega->uart1_rx_fifo_state = 0;
 
-    struct avr * const avr = &(mega->avr);
-    struct avr_dmem * const dmem = &(avr->dmem);
-    struct avr_pmem * const pmem = &(avr->pmem);
+    struct avr* const avr = &(mega->avr);
+    avr->sleep_cb = &atmega128_sleep_cb;
+    avr->sleep_cb_arg = mega;
+    struct avr_dmem* const dmem = &(avr->dmem);
+    struct avr_pmem* const pmem = &(avr->pmem);
 
     // give access to arrays
     dmem->mem = mega->dmem;
@@ -137,7 +252,7 @@ void atmega128_init(struct atmega128 * const mega,
 
     // initialise the config variables
     avr->pc_size = ATMEGA128_PC_SIZE;
-    
+
     dmem->io_resisters_start = ATMEGA128_IO_REGISTERS_START;
     dmem->io_resisters_end = ATMEGA128_IO_REGISTERS_END;
     dmem->io_resisters_length = ATMEGA128_IO_REGISTERS_LENGTH;
@@ -172,6 +287,18 @@ void atmega128_init(struct atmega128 * const mega,
             ATMEGA128_IO_REGISTERS_START].write_callback
             = &atmega128_ucsr0a_write_cb;
     dmem->callbacks[ATMEGA128_UCSR0A_LOC -
+            ATMEGA128_IO_REGISTERS_START].write_callback_arg = mega;
+
+    dmem->callbacks[ATMEGA128_UCSR0B_LOC -
+            ATMEGA128_IO_REGISTERS_START].write_callback
+            = &atmega128_ucsr0b_write_cb;
+    dmem->callbacks[ATMEGA128_UCSR0B_LOC -
+            ATMEGA128_IO_REGISTERS_START].write_callback_arg = mega;
+
+    dmem->callbacks[ATMEGA128_SREG_LOC -
+            ATMEGA128_IO_REGISTERS_START].write_callback
+            = &atmega128_sreg_write_cb;
+    dmem->callbacks[ATMEGA128_SREG_LOC -
             ATMEGA128_IO_REGISTERS_START].write_callback_arg = mega;
 
     // initialise version specific registers

@@ -85,14 +85,20 @@ struct avr_pmem
 
 struct avr
 {
+    void (*sleep_cb)(void*, uint8_t);
+    void* sleep_cb_arg;
     struct avr_dmem dmem;
     struct avr_pmem pmem;
     uint32_t pc;
+    uint32_t interrupt_vector;
     uint8_t pc_size;
+    uint8_t asleep;
 };
 
 void avr_tick(struct avr* avr);
 void avr_init(struct avr* avr);
+unsigned char avr_interrupt(struct avr* const avr, const uint32_t vector);
+void avr_interrupt_nocheck(struct avr* const avr, const uint32_t vector);
 void avr_dmem_write(struct avr_dmem * const dmem, const uint32_t address,
                     const uint8_t value);
 uint8_t avr_dmem_read(const struct avr_dmem * const dmem, const uint32_t address);

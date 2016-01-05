@@ -254,7 +254,6 @@ void avr_sp_write(struct avr_dmem * const dmem, const uint32_t value)
     uint8_t i = 0;
     while (i < dmem->sp_size)
     {
-
         avr_dmem_write(dmem, dmem->sp_loc + i, (uint8_t) ((value >> (i << 3)) &
                        0xFF));
         ++i;
@@ -279,6 +278,42 @@ void avr_push(struct avr_dmem * const dmem, const uint8_t value)
 void avr_skip_next_instruction(struct avr * const avr)
 {
     avr->pc += 1 + avr->pmem.decoded[avr->pc + 1].length;
+}
+
+void avr_interrupt_nocheck(struct avr* const avr, const uint32_t vector)
+{
+    if ((avr->asleep != 0) && (avr->sleep_cb != 0))
+    {
+        avr->sleep_cb(avr->sleep_cb_arg, 0);
+        avr->asleep = 0;
+    }
+    avr->interrupt_vector = vector;
+}
+
+unsigned char avr_interrupt(struct avr* const avr, const uint32_t vector)
+{
+    if (avr_sreg_read_bit(&avr->dmem, AVR_SREG_INTERRUPT_BIT) != 0)
+    { // global interrupt enabled
+        avr_interrupt_nocheck(avr, vector);
+        return 1;
+    }
+    return 0;
+}
+
+// push PC to stack and clear I flag in sreg
+void avr_interrupt_call(struct avr* const avr)
+{
+    uint32_t pc_ret = avr->pc;
+    uint8_t i;
+    for (i = avr->pc_size - 1; i < avr->pc_size; --i)
+    {
+        avr_push(&(avr->dmem), pc_ret >> (i << 3));
+    }
+
+    avr_sreg_clear_bit(&(avr->dmem), AVR_SREG_INTERRUPT_BIT);
+
+    avr->pc = avr->interrupt_vector;
+    avr->interrupt_vector = 0;
 }
 
 uint16_t x0000(const uint16_t instruction)
@@ -1302,6 +1337,7 @@ void avr_ins_reti(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     {
         avr->pc |= ((uint32_t) avr_pop(&(avr->dmem))) << (i << 3);
     }
+    avr_sreg_set_bit(&(avr->dmem), AVR_SREG_INTERRUPT_BIT);
 }
 
 void avr_ins_eicall(struct avr * const avr, uint16_t arg0, uint16_t arg1)
@@ -1327,6 +1363,8 @@ void avr_ins_sleep(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
+    avr->sleep_cb(avr->sleep_cb_arg, 1);
+    avr->asleep = 1;
     ++avr->pc;
 }
 
@@ -1479,7 +1517,7 @@ void avr_ins_mul(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry6(sreg, R);
     avr_sreg_zero2(sreg, R);
-    
+
     avr_dmem_write(&(avr->dmem), 0, R);
     avr_dmem_write(&(avr->dmem), 1, R >> 8);
 
@@ -1620,9 +1658,13 @@ void avr_tick(struct avr * avr)
 {
     struct avr_pmem_decoded* dec = &avr->pmem.decoded[avr->pc];
     dec->function(avr, dec->arg0, dec->arg1);
+    if (avr->interrupt_vector != 0)
+    {
+        avr_interrupt_call(avr);
+    }
 }
 
-void avr_init(struct avr * avr)
+void avr_init(struct avr* avr)
 {
     static const struct avr_instruction instructions[] = {
         {.pattern = 0x0000, .mask = 0xFFFF, .length = 1,
@@ -1932,4 +1974,8 @@ void avr_init(struct avr * avr)
             sizeof (instructions[0]));
 
     avr->pc = 0;
+    avr->asleep = 0;
+    avr->interrupt_vector = 0;
+    avr->sleep_cb = 0;
+    avr->sleep_cb_arg = 0;
 }
