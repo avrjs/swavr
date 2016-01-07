@@ -93,12 +93,13 @@ struct avr
     uint32_t interrupt_vector;
     uint8_t pc_size;
     uint8_t asleep;
+    uint8_t interrupt_delay;
 };
 
 void avr_tick(struct avr* avr);
 void avr_init(struct avr* avr);
 unsigned char avr_interrupt(struct avr* const avr, const uint32_t vector);
-void avr_interrupt_nocheck(struct avr* const avr, const uint32_t vector);
+unsigned char avr_interrupt_nocheck(struct avr* const avr, const uint32_t vector);
 void avr_dmem_write(struct avr_dmem * const dmem, const uint32_t address,
                     const uint8_t value);
 uint8_t avr_dmem_read(const struct avr_dmem * const dmem, const uint32_t address);

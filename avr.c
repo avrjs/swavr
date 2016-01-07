@@ -280,22 +280,26 @@ void avr_skip_next_instruction(struct avr * const avr)
     avr->pc += 1 + avr->pmem.decoded[avr->pc + 1].length;
 }
 
-void avr_interrupt_nocheck(struct avr* const avr, const uint32_t vector)
+unsigned char avr_interrupt_nocheck(struct avr* const avr, const uint32_t vector)
 {
     if ((avr->asleep != 0) && (avr->sleep_cb != 0))
     {
         avr->sleep_cb(avr->sleep_cb_arg, 0);
         avr->asleep = 0;
     }
-    avr->interrupt_vector = vector;
+    if (avr->interrupt_vector == 0)
+    { // no interrupt currently pending
+        avr->interrupt_vector = vector;
+        return 1;
+    }
+    return 0;
 }
 
 unsigned char avr_interrupt(struct avr* const avr, const uint32_t vector)
 {
     if (avr_sreg_read_bit(&avr->dmem, AVR_SREG_INTERRUPT_BIT) != 0)
     { // global interrupt enabled
-        avr_interrupt_nocheck(avr, vector);
-        return 1;
+        return avr_interrupt_nocheck(avr, vector);
     }
     return 0;
 }
@@ -309,7 +313,6 @@ void avr_interrupt_call(struct avr* const avr)
     {
         avr_push(&(avr->dmem), pc_ret >> (i << 3));
     }
-
     avr_sreg_clear_bit(&(avr->dmem), AVR_SREG_INTERRUPT_BIT);
 
     avr->pc = avr->interrupt_vector;
@@ -1363,8 +1366,11 @@ void avr_ins_sleep(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
-    avr->sleep_cb(avr->sleep_cb_arg, 1);
-    avr->asleep = 1;
+    if (avr->sleep_cb != 0)
+    {
+        avr->sleep_cb(avr->sleep_cb_arg, 1);
+        avr->asleep = 1;
+    }
     ++avr->pc;
 }
 
@@ -1658,9 +1664,16 @@ void avr_tick(struct avr * avr)
 {
     struct avr_pmem_decoded* dec = &avr->pmem.decoded[avr->pc];
     dec->function(avr, dec->arg0, dec->arg1);
-    if (avr->interrupt_vector != 0)
+    if (avr->interrupt_delay != 0)
     {
-        avr_interrupt_call(avr);
+        --avr->interrupt_delay;
+    }
+    else
+    {
+        if (avr->interrupt_vector != 0)
+        {
+            avr_interrupt_call(avr);
+        }
     }
 }
 
@@ -1975,6 +1988,7 @@ void avr_init(struct avr* avr)
 
     avr->pc = 0;
     avr->asleep = 0;
+    avr->interrupt_delay = 0;
     avr->interrupt_vector = 0;
     avr->sleep_cb = 0;
     avr->sleep_cb_arg = 0;

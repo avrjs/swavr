@@ -118,10 +118,7 @@ void atmega128_ucsr0b_write_cb(void* arg, uint8_t value)
         ((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 7)) == 0) &&
         ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 7)) != 0))
     { // interrupt is enabled and flag is set
-        if (avr_interrupt(&mega->avr, ATMEGA128_INT_VECT_USART0_RXC))
-        {
-            mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] &= ~(1 << 7);
-        }
+        avr_interrupt(&mega->avr, ATMEGA128_INT_VECT_USART0_RXC);
     }
     else if(((value & (1 << 6)) != 0) &&
         ((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 6)) == 0) &&
@@ -183,6 +180,8 @@ void atmega128_sreg_write_cb(void* arg, uint8_t value)
        ((mega->avr.dmem.mem[ATMEGA128_SREG_LOC] & AVR_SREG_INTERRUPT_MASK) ==
        0))
     { // check all interrupts to see if flags set
+        // interupts need to be delayed 1 instuction after this bit is set
+        mega->avr.interrupt_delay = 1;
         if(((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 7)) != 0) &&
             ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 7)) != 0))
         { // interrupt is enabled and flag is set
@@ -191,8 +190,11 @@ void atmega128_sreg_write_cb(void* arg, uint8_t value)
         else if(((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 6)) != 0) &&
             ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 6)) != 0))
         { // interrupt is enabled and flag is set
-            mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] &= ~(1 << 6);
-            avr_interrupt_nocheck(&mega->avr, ATMEGA128_INT_VECT_USART0_TXC);
+            if (avr_interrupt_nocheck(&mega->avr, ATMEGA128_INT_VECT_USART0_TXC)
+              != 0)
+            {
+                mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] &= ~(1 << 6);
+            }
         }
         else if(((mega->avr.dmem.mem[ATMEGA128_UCSR0B_LOC] & (1 << 5)) != 0) &&
             ((mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & (1 << 5)) != 0))
@@ -236,8 +238,6 @@ void atmega128_init(struct atmega128* const mega)
     mega->uart1_rx_fifo_state = 0;
 
     struct avr* const avr = &(mega->avr);
-    avr->sleep_cb = &atmega128_sleep_cb;
-    avr->sleep_cb_arg = mega;
     struct avr_dmem* const dmem = &(avr->dmem);
     struct avr_pmem* const pmem = &(avr->pmem);
 
@@ -269,6 +269,9 @@ void atmega128_init(struct atmega128* const mega)
     dmem->eind_loc = ATMEGA128_EIND_LOC;
 
     avr_init(avr);
+
+    avr->sleep_cb = &atmega128_sleep_cb;
+    avr->sleep_cb_arg = mega;
 
     // initialise version specific callbacks
     dmem->callbacks[ATMEGA128_UDR0_LOC -
