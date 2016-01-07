@@ -229,7 +229,10 @@ void atmega128_reinit(struct atmega128 * const mega)
 void atmega128_sleep_cb(void* arg, uint8_t sleep)
 {
     struct atmega128* mega = (struct atmega128*) arg;
-    mega->sleep_cb(mega->sleep_cb_arg, sleep);
+    if ((mega->avr.dmem.mem[ATMEGA128_MCUCR_LOC] & (1 << 5)) != 0)
+    {
+        mega->sleep_cb(mega->sleep_cb_arg, sleep);
+    }
 }
 
 void atmega128_init(struct atmega128* const mega)
