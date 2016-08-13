@@ -1,6 +1,6 @@
 /*
  atmega128.c a wrapper for avr.c simulating an ATmega128
- *
+
  Copyright (C) 2015  Julian Ingram
 
  This program is free software: you can redistribute it and/or modify
@@ -145,8 +145,9 @@ uint8_t atmega128_udr0_read_cb(void* arg, uint8_t value)
     if (mega->uart0_rx_fifo_state > 0)
     { // data is present
         if (mega->uart0_rx_fifo_state == 2)
-        { // move fifo byte to udr0 and the errors along with it
+        { // move fifo byte to udr0
             mega->avr.dmem.mem[ATMEGA128_UDR0_LOC] = mega->uart0_rx_fifo;
+            // move the errors into ucsr0a
             mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] =
               (mega->avr.dmem.mem[ATMEGA128_UCSR0A_LOC] & 0xE3) |
               (mega->uart0_rx_errs & 0x1C);
@@ -166,7 +167,7 @@ uint8_t atmega128_udr0_read_cb(void* arg, uint8_t value)
 void atmega128_udr0_write_cb(void* arg, uint8_t value)
 {
     struct atmega128* const mega = (struct atmega128*) arg;
-    mega->uart0_write_cb(mega->uart0_write_cb_arg, value);
+    mega->uart0_cb(mega->uart0_cb_arg, value);
     // trigger interrupts
     atmega128_set_txc0(mega);
     atmega128_set_udre0(mega);

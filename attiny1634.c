@@ -1,6 +1,6 @@
 /*
- attiny1634.c a wrapper for avr.c simulating an ATmega128
- * 
+ attiny1634.c a wrapper for avr.c simulating an ATTINY1634
+
  Copyright (C) 2015  Julian Ingram
 
  This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@
  */
 
 #include "attiny1634.h"
+#include "avr_sreg.h"
 
 #include "jihex.h"
 
@@ -34,37 +35,110 @@ void attiny1634_tick(struct attiny1634 * const tiny)
     avr_tick(&tiny->avr);
 }
 
+void attiny1634_set_rxc0(struct attiny1634* const tiny)
+{
+    tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] |= (1 << 7);
+    if((tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] & (1 << 7)) != 0)
+    { // interrupt is enabled
+        avr_interrupt(&tiny->avr, ATTINY1634_INT_VECT_USART0_RXC);
+    }
+}
+
+void attiny1634_set_txc0(struct attiny1634* const tiny)
+{
+    if((tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] & (1 << 6)) != 0)
+    { // interrupt is enabled
+        if (avr_interrupt(&tiny->avr, ATTINY1634_INT_VECT_USART0_TXC) == 0)
+        { // if interupts are disabled globally
+            tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] |= (1 << 6);
+        }
+    }
+    else
+    {
+        tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] |= (1 << 6);
+    }
+}
+
+void attiny1634_set_udre0(struct attiny1634* const tiny)
+{
+    if((tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] & (1 << 5)) != 0)
+    { // interrupt is enabled
+        avr_interrupt(&tiny->avr, ATTINY1634_INT_VECT_USART0_DRE);
+    }
+}
+
 // this is called externally to write to the uart
 
 void attiny1634_uart0_write(struct attiny1634 * const tiny, const uint8_t value)
 {
-    switch (tiny->uart0_rx_fifo_state)
-    {
-    case 0: // value into udr0
-        tiny->avr.dmem.mem[ATTINY1634_UDR0_LOC] = value;
-        ++tiny->uart0_rx_fifo_state;
-        // set RXC0
-        avr_dmem_write(&tiny->avr.dmem, ATTINY1634_UCSR0A_LOC,
-                       avr_dmem_read(&tiny->avr.dmem,
-                                     ATTINY1634_UCSR0A_LOC) | (1 << 7));
-        break;
-    case 1: // value goes into buffer
-        tiny->uart0_rx_fifo = value;
-        ++tiny->uart0_rx_fifo_state;
-        break;
+    if ((avr_dmem_read(&tiny->avr.dmem, ATTINY1634_UCSR0B_LOC) & (1 << 4)) != 0)
+    { // receive enabled
+        switch (tiny->uart0_rx_fifo_state)
+        {
+        case 0: // value into udr0
+            tiny->avr.dmem.mem[ATTINY1634_UDR0_LOC] = value;
+            ++tiny->uart0_rx_fifo_state;
+            attiny1634_set_rxc0(tiny);
+            break;
+        case 1: // value goes into buffer
+            tiny->uart0_rx_fifo = value;
+            tiny->uart0_rx_errs = 0;
+            ++tiny->uart0_rx_fifo_state;
+            break;
+        default:
+            // TODO: set DOR flag
+            break;
+        }
     }
 }
 
 void attiny1634_ucsr0a_write_cb(void* arg, uint8_t value)
-{ // this needs to check to see if there is data in the udr rx buffer and set
-    // RXC if true
+{
     struct attiny1634* tiny = (struct attiny1634*) arg;
-    if (tiny->uart0_rx_fifo_state != 0)
+    // TXC0 is cleared by writing a 1, all other bits in this reg are automatic
+    if ((value & (1 << 6)) != 0)
     {
-        value |= 1 << 7;
+       tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] &= ~(1 << 6);
     }
-    tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] = value;
 }
+
+void attiny1634_ucsr0b_write_cb(void* arg, uint8_t value)
+{
+    struct attiny1634* const tiny = (struct attiny1634*) arg;
+
+    if ((value & (1 << 4)) == 0)
+    { // RXEN cleared, flush rx fifo
+        tiny->uart0_rx_fifo_state = 0;
+        // clear RXC
+        tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] &= ~(1 << 7);
+    }
+    // check if interrupt enables are being turned on, if they are then trigger
+    // interrupts if flags set
+    if(((value & (1 << 7)) != 0) &&
+        ((tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] & (1 << 7)) == 0) &&
+        ((tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] & (1 << 7)) != 0))
+    { // interrupt is enabled and flag is set
+        avr_interrupt(&tiny->avr, ATTINY1634_INT_VECT_USART0_RXC);
+    }
+    else if(((value & (1 << 6)) != 0) &&
+        ((tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] & (1 << 6)) == 0) &&
+        ((tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] & (1 << 6)) != 0))
+    { // interrupt is enabled and flag is set
+        if (avr_interrupt(&tiny->avr, ATTINY1634_INT_VECT_USART0_TXC) != 0)
+        {
+            tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] &= ~(1 << 6);
+        }
+    }
+    else if(((value & (1 << 5)) != 0) &&
+        ((tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] & (1 << 5)) == 0) &&
+        ((tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] & (1 << 5)) != 0))
+    { // interrupt is enabled and flag is set
+        avr_interrupt(&tiny->avr, ATTINY1634_INT_VECT_USART0_DRE);
+    }
+
+    tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] = value;
+}
+
 
 uint8_t attiny1634_udr0_read_cb(void* arg, uint8_t value)
 {
@@ -74,9 +148,16 @@ uint8_t attiny1634_udr0_read_cb(void* arg, uint8_t value)
         if (tiny->uart0_rx_fifo_state == 2)
         { // move fifo byte to udr0
             tiny->avr.dmem.mem[ATTINY1634_UDR0_LOC] = tiny->uart0_rx_fifo;
+            // move the errors into ucsr0a
+            tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] =
+              (tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] & 0xE3) |
+              (tiny->uart0_rx_errs & 0x1C);
+            // trigger RXC interrupt
+            avr_interrupt(&tiny->avr, ATTINY1634_INT_VECT_USART0_RXC);
         }
         else
         {
+            // clear RXC
             tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] &= ~(1 << 7);
         }
         --tiny->uart0_rx_fifo_state;
@@ -87,9 +168,43 @@ uint8_t attiny1634_udr0_read_cb(void* arg, uint8_t value)
 void attiny1634_udr0_write_cb(void* arg, uint8_t value)
 {
     struct attiny1634* tiny = (struct attiny1634*) arg;
-    tiny->uart0_write_cb(tiny->uart0_write_cb_arg, value);
-    // set UDRE0 and TXC0
-    tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] |= 3 << 5;
+    tiny->uart0_cb(tiny->uart0_cb_arg, value);
+    // trigger interrupts
+    attiny1634_set_txc0(tiny);
+    attiny1634_set_udre0(tiny);
+}
+
+void attiny1634_sreg_write_cb(void* arg, uint8_t value)
+{
+    struct attiny1634* const tiny = (struct attiny1634*) arg;
+    // check if enabling interrupts
+    if (((value & AVR_SREG_INTERRUPT_MASK) != 0) &&
+       ((tiny->avr.dmem.mem[ATTINY1634_SREG_LOC] & AVR_SREG_INTERRUPT_MASK) ==
+       0))
+    { // check all interrupts to see if flags set
+        // interupts need to be delayed 1 instuction after this bit is set
+        tiny->avr.interrupt_delay = 1;
+        if(((tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] & (1 << 7)) != 0) &&
+            ((tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] & (1 << 7)) != 0))
+        { // interrupt is enabled and flag is set
+            avr_interrupt_nocheck(&tiny->avr, ATTINY1634_INT_VECT_USART0_RXC);
+        }
+        else if(((tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] & (1 << 6)) != 0) &&
+            ((tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] & (1 << 6)) != 0))
+        { // interrupt is enabled and flag is set
+            if (avr_interrupt_nocheck(&tiny->avr,
+                ATTINY1634_INT_VECT_USART0_TXC) != 0)
+            {
+                tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] &= ~(1 << 6);
+            }
+        }
+        else if(((tiny->avr.dmem.mem[ATTINY1634_UCSR0B_LOC] & (1 << 5)) != 0) &&
+            ((tiny->avr.dmem.mem[ATTINY1634_UCSR0A_LOC] & (1 << 5)) != 0))
+        { // interrupt is enabled and flag is set
+            avr_interrupt_nocheck(&tiny->avr, ATTINY1634_INT_VECT_USART0_DRE);
+        }
+    }
+    tiny->avr.dmem.mem[ATTINY1634_SREG_LOC] = value;
 }
 
 void attiny1634_init_regs(struct avr_dmem * const dmem)
@@ -110,16 +225,21 @@ void attiny1634_reinit(struct attiny1634 * const tiny)
            sizeof (*tiny->avr.pmem.mem));
 
     attiny1634_init_regs(&tiny->avr.dmem);
-    
+
     tiny->avr.pc = 0;
 }
 
-void attiny1634_init(struct attiny1634 * const tiny,
-                     void(* const uart0_write_cb) (void*, uint8_t),
-                     void* const uart0_write_cb_arg)
+void attiny1634_sleep_cb(void* arg, uint8_t sleep)
 {
-    tiny->uart0_write_cb = uart0_write_cb;
-    tiny->uart0_write_cb_arg = uart0_write_cb_arg;
+    struct attiny1634* tiny = (struct attiny1634*) arg;
+    if ((tiny->avr.dmem.mem[ATTINY1634_MCUCR_LOC] & (1 << 5)) != 0)
+    {
+        tiny->sleep_cb(tiny->sleep_cb_arg, sleep);
+    }
+}
+
+void attiny1634_init(struct attiny1634 * const tiny)
+{
     tiny->uart0_rx_fifo_state = 0;
     tiny->uart1_rx_fifo_state = 0;
 
@@ -173,6 +293,18 @@ void attiny1634_init(struct attiny1634 * const tiny,
             ATTINY1634_IO_REGISTERS_START].write_callback
             = &attiny1634_ucsr0a_write_cb;
     dmem->callbacks[ATTINY1634_UCSR0A_LOC -
+            ATTINY1634_IO_REGISTERS_START].write_callback_arg = tiny;
+
+    dmem->callbacks[ATTINY1634_UCSR0B_LOC -
+            ATTINY1634_IO_REGISTERS_START].write_callback
+            = &attiny1634_ucsr0b_write_cb;
+    dmem->callbacks[ATTINY1634_UCSR0B_LOC -
+            ATTINY1634_IO_REGISTERS_START].write_callback_arg = tiny;
+
+    dmem->callbacks[ATTINY1634_SREG_LOC -
+            ATTINY1634_IO_REGISTERS_START].write_callback
+            = &attiny1634_sreg_write_cb;
+    dmem->callbacks[ATTINY1634_SREG_LOC -
             ATTINY1634_IO_REGISTERS_START].write_callback_arg = tiny;
 
     // initialise version specific registers

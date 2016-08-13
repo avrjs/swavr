@@ -1,6 +1,6 @@
 /*
  attiny1634.h a wrapper for avr.c simulating an ATmega128
- * 
+
  Copyright (C) 2015  Julian Ingram
 
  This program is free software: you can redistribute it and/or modify
@@ -49,24 +49,36 @@
 #define ATTINY1634_RAMPZ_LOC (ATTINY1634_DMEM_SIZE)
 #define ATTINY1634_EIND_LOC (ATTINY1634_DMEM_SIZE)
 
+#define ATTINY1634_MCUCR_LOC (0x56)
+
 #define ATTINY1634_UDR0_LOC (0x40)
 #define ATTINY1634_UCSR0A_LOC (0x46)
 #define ATTINY1634_UCSR0B_LOC (0x45)
 #define ATTINY1634_UCSR0C_LOC (0x44)
 #define ATTINY1634_UCSR0D_LOC (0x43)
 
+#define ATTINY1634_INT_VECT_USART0_RXC (0x20)
+#define ATTINY1634_INT_VECT_USART0_DRE (0x22)
+#define ATTINY1634_INT_VECT_USART0_TXC (0x24)
+
+
 struct attiny1634
 {
+    void (*sleep_cb)(void*, uint8_t);
+    void* sleep_cb_arg;
     uint8_t dmem[ATTINY1634_DMEM_SIZE];
     struct avr_dmem_cb callbacks[ATTINY1634_IO_REGISTERS_LENGTH];
     struct avr_pmem_decoded decoded[ATTINY1634_PMEM_SIZE];
     uint16_t pmem[ATTINY1634_PMEM_SIZE];
     struct avr avr;
-    void(*uart0_write_cb)(void*, uint8_t);
-    void* uart0_write_cb_arg;
+    void(*uart0_cb)(void*, uint8_t);
+    void* uart0_cb_arg;
     uint8_t uart0_rx_fifo;
+    uint8_t uart0_rx_errs; // these are the errors that get shifted with the
+    // data directly above
     unsigned char uart0_rx_fifo_state;
     uint8_t uart1_rx_fifo;
+    uint8_t uart1_rx_errs;
     unsigned char uart1_rx_fifo_state;
 };
 
@@ -76,11 +88,8 @@ void attiny1634_tick(struct attiny1634 * const tiny);
 void attiny1634_uart0_write(struct attiny1634 * const tiny,
                             const uint8_t value);
 void attiny1634_reinit(struct attiny1634 * const tiny);
-void attiny1634_init(struct attiny1634 * const tiny,
-                     void(* const uart0_write_cb) (void*, uint8_t),
-                     void* const uart0_write_cb_arg);
+void attiny1634_init(struct attiny1634 * const tiny);
 int attiny1634_load_hex(struct attiny1634 * const core,
                         const char* const filename);
 
 #endif
-

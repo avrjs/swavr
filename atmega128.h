@@ -1,6 +1,6 @@
 /*
  atmega128.h a wrapper for avr.c simulating an ATmega128
- *
+
  Copyright (C) 2015  Julian Ingram
 
  This program is free software: you can redistribute it and/or modify
@@ -49,12 +49,12 @@
 #define ATMEGA128_RAMPZ_LOC (0x5B)
 #define ATMEGA128_EIND_LOC (ATMEGA128_DMEM_SIZE)
 
+#define ATMEGA128_MCUCR_LOC (0x55)
+
 #define ATMEGA128_UDR0_LOC (0x2C)
 #define ATMEGA128_UCSR0A_LOC (0x2B)
 #define ATMEGA128_UCSR0B_LOC (0x2A)
 #define ATMEGA128_UCSR0C_LOC (0x95)
-
-#define ATMEGA128_MCUCR_LOC (0x55)
 
 #define ATMEGA128_INT_VECT_USART0_RXC (0x24)
 #define ATMEGA128_INT_VECT_USART0_UDRE (0x26)
@@ -69,8 +69,8 @@ struct atmega128
     struct avr_pmem_decoded decoded[ATMEGA128_PMEM_SIZE];
     uint16_t pmem[ATMEGA128_PMEM_SIZE];
     struct avr avr;
-    void(*uart0_write_cb)(void*, uint8_t);
-    void* uart0_write_cb_arg;
+    void(*uart0_cb)(void*, uint8_t);
+    void* uart0_cb_arg;
     uint8_t uart0_rx_fifo;
     uint8_t uart0_rx_errs; // these are the errors that get shifted with the
     // data directly above
