@@ -232,7 +232,7 @@ void attiny1634_reinit(struct attiny1634 * const tiny)
 void attiny1634_sleep_cb(void* arg, uint8_t sleep)
 {
     struct attiny1634* tiny = (struct attiny1634*) arg;
-    if ((tiny->avr.dmem.mem[ATTINY1634_MCUCR_LOC] & (1 << 5)) != 0)
+    if ((tiny->avr.dmem.mem[ATTINY1634_MCUCR_LOC] & (1 << 4)) != 0)
     {
         tiny->sleep_cb(tiny->sleep_cb_arg, sleep);
     }
@@ -275,6 +275,9 @@ void attiny1634_init(struct attiny1634 * const tiny)
     dmem->eind_loc = ATTINY1634_EIND_LOC;
 
     avr_init(avr);
+
+    avr->sleep_cb = &attiny1634_sleep_cb;
+    avr->sleep_cb_arg = tiny;
 
     // initialise version specific callbacks
     dmem->callbacks[ATTINY1634_UDR0_LOC -
