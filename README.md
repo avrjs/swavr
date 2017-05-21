@@ -8,13 +8,24 @@ There is a `.h` file and accompanying `.c` file for each supported microcontroll
 In the simplest use case there are only a few functions to worry about, taking the ATmega128 as an example:
 
 ```
-void atmega128_init(struct atmega128 * const mega,
-                 void(* const uart0_write_cb) (void*, uint8_t),
-                 void* const uart0_write_cb_arg);
+void atmega128_init(struct atmega128 * const mega);
 ```
 
-Pass a pointer to an uninitialised `struct atmega128` into this function for initialisation. `uart0_write_cb` is called from `atmega128_tick` when the AVR would have outputted a UART character, `uart0_write_cb_arg` will become the `void*` argument to the aforementioned callback.
+Pass a pointer to an uninitialised `struct atmega128` into this function for initialisation.
 
+```
+mega->uart0_cb = uart0_cb;
+mega->uart0_cb_arg = uart0_cb_arg;
+```
+
+`uart0_cb` is called when the AVR would have outputted a UART character, `uart0_cb_arg` will become the first argument and the second argument is the character transmitted.
+
+```
+mega->sleep_cb = sleep_cb;
+mega->sleep_cb_arg = sleep_cb_arg;
+```
+
+`sleep_cb` is called when the microcontroller enters or wakes from sleep. `sleep_cb_arg` will become the first argument and the second argument to `sleep_cb` is `1` when entering sleep and `0` when waking.
 
 ```
 void atmega128_tick(struct atmega128 * const mega);
