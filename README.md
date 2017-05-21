@@ -69,7 +69,12 @@ int print_one_line(const char* const hex_path)
     struct atmega128 mega;
 
     // initialise memory and registers
-    atmega128_init(&mega, &uart0_callback, &done);
+    atmega128_init(&mega);
+
+    mega->uart0_cb = &uart0_callback;
+    mega->uart0_cb_arg = &done;
+
+    mega->sleep_cb = 0; // will not sleep
 
     // load hex file from the path passed into this function as a parameter
     if (atmega128_load_hex(&mega, hex_path))
