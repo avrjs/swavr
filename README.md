@@ -8,31 +8,39 @@ There is a `.h` file and accompanying `.c` file for each supported microcontroll
 In the simplest use case there are only a few functions to worry about, taking the ATmega128 as an example:
 
 ```
-void atmega128_init(struct atmega128 * const mega);
+struct atmega128_callbacks
+{
+    void (*sleep)(void*, uint8_t);
+    void* sleep_arg;
+    void(*uart0)(void*, uint8_t);
+    void* uart0_arg;
+};
+```
+
+`uart0` is called when the AVR would have outputted a UART character, `uart0_arg` will become the first argument and the second argument is the character transmitted.
+`sleep` is called when the microcontroller enters or wakes from sleep. `sleep_arg` will become the first argument and the second argument to `sleep` is `1` when entering sleep and `0` when waking.
+
+```
+struct atmega128_config
+{
+    unsigned char bootsz;
+    unsigned char bootrst;
+};
+```
+
+`bootsz` indicates the size of the boot flash section, `bootrst` changes the reset vector, information on both these can be found in the ATmega128 datasheet.
+
+```
+void atmega128_init(struct atmega128 * const mega, const struct atmega128_callbacks callbacks, const struct atmega128_config config);
 ```
 
 Pass a pointer to an uninitialised `struct atmega128` into this function for initialisation.
-
-```
-mega->uart0_cb = uart0_cb;
-mega->uart0_cb_arg = uart0_cb_arg;
-```
-
-`uart0_cb` is called when the AVR would have outputted a UART character, `uart0_cb_arg` will become the first argument and the second argument is the character transmitted.
-
-```
-mega->sleep_cb = sleep_cb;
-mega->sleep_cb_arg = sleep_cb_arg;
-```
-
-`sleep_cb` is called when the microcontroller enters or wakes from sleep. `sleep_cb_arg` will become the first argument and the second argument to `sleep_cb` is `1` when entering sleep and `0` when waking.
 
 ```
 void atmega128_tick(struct atmega128 * const mega);
 ```
 
 Executes and instruction
-
 
 ```
 void atmega128_uart0_write(struct atmega128 * const mega,
@@ -68,13 +76,20 @@ int print_one_line(const char* const hex_path)
     // allocate memory
     struct atmega128 mega;
 
+    struct atmega128_callbacks callbacks = {
+        .uart0 = &uart0_callback,
+        .uart0_arg = &done,
+        .sleep = 0, // will not sleep
+        .sleep_arg = 0
+    };
+
+    const struct atmega128_config config = {;
+        .bootsz = 3,
+        .bootrst = 0
+    };
+
     // initialise memory and registers
-    atmega128_init(&mega);
-
-    mega->uart0_cb = &uart0_callback;
-    mega->uart0_cb_arg = &done;
-
-    mega->sleep_cb = 0; // will not sleep
+    atmega128_init(&mega, callbacks, config);
 
     // load hex file from the path passed into this function as a parameter
     if (atmega128_load_hex(&mega, hex_path))
