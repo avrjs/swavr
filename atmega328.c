@@ -246,7 +246,8 @@ void atmega328_reinit(struct atmega328 * const mega)
 static void atmega328_sleep_cb(void* arg, uint8_t sleep)
 {
     struct atmega328* mega = (struct atmega328*) arg;
-    if ((mega->avr.dmem.mem[ATMEGA328_MCUCR_LOC] & (1 << 5)) != 0)
+    if (((mega->avr.dmem.mem[ATMEGA328_SMCR_LOC] & (1 << 0)) != 0) &&
+        (mega->callbacks.sleep != 0))
     {
         mega->callbacks.sleep(mega->callbacks.sleep_arg, sleep);
     }

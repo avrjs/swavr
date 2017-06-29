@@ -229,7 +229,8 @@ void attiny1634_reinit(struct attiny1634 * const tiny)
 void attiny1634_sleep_cb(void* arg, uint8_t sleep)
 {
     struct attiny1634* tiny = (struct attiny1634*) arg;
-    if ((tiny->avr.dmem.mem[ATTINY1634_MCUCR_LOC] & (1 << 4)) != 0)
+    if (((tiny->avr.dmem.mem[ATTINY1634_MCUCR_LOC] & (1 << 4)) != 0) &&
+        (tiny->callbacks.sleep != 0))
     {
         tiny->callbacks.sleep(tiny->callbacks.sleep_arg, sleep);
     }

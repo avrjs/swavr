@@ -247,7 +247,8 @@ void atmega128_reinit(struct atmega128 * const mega)
 void atmega128_sleep_cb(void* arg, uint8_t sleep)
 {
     struct atmega128* mega = (struct atmega128*) arg;
-    if ((mega->avr.dmem.mem[ATMEGA128_MCUCR_LOC] & (1 << 5)) != 0)
+    if (((mega->avr.dmem.mem[ATMEGA128_MCUCR_LOC] & (1 << 5)) != 0) &&
+        (mega->callbacks.sleep != 0))
     {
         mega->callbacks.sleep(mega->callbacks.sleep_arg, sleep);
     }
