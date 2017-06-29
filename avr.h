@@ -51,6 +51,7 @@ struct avr_dmem_cb
     void* read_callback_arg;
 };
 
+
 struct avr_dmem
 {
     uint8_t* mem; //[AVR_DMEM_SIZE];
@@ -83,10 +84,17 @@ struct avr_pmem
     const struct avr_instruction * instructions_limit;
 };
 
+struct avr_callbacks
+{
+    void (*sleep)(void*, uint8_t);
+    void* sleep_arg;
+    uint32_t (*iv)(void*, uint32_t);
+    void* iv_arg;
+};
+
 struct avr
 {
-    void (*sleep_cb)(void*, uint8_t);
-    void* sleep_cb_arg;
+    struct avr_callbacks callbacks;
     struct avr_dmem dmem;
     struct avr_pmem pmem;
     uint32_t pc;
@@ -96,8 +104,8 @@ struct avr
     uint8_t interrupt_delay;
 };
 
-void avr_tick(struct avr* avr);
-void avr_init(struct avr* avr);
+void avr_tick(struct avr* const avr);
+void avr_init(struct avr* const avr, const struct avr_callbacks callbacks);
 unsigned char avr_interrupt(struct avr* const avr, const uint32_t vector);
 unsigned char avr_interrupt_nocheck(struct avr* const avr, const uint32_t vector);
 void avr_dmem_write(struct avr_dmem * const dmem, const uint32_t address,

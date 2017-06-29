@@ -35,7 +35,7 @@ void atmega328_tick(struct atmega328* const mega)
     avr_tick(&mega->avr);
 }
 
-void atmega328_set_rxc0(struct atmega328* const mega)
+static void atmega328_set_rxc0(struct atmega328* const mega)
 {
     mega->avr.dmem.mem[ATMEGA328_UCSR0A_LOC] |= (1 << 7);
     if((mega->avr.dmem.mem[ATMEGA328_UCSR0B_LOC] & (1 << 7)) != 0)
@@ -44,7 +44,7 @@ void atmega328_set_rxc0(struct atmega328* const mega)
     }
 }
 
-void atmega328_set_txc0(struct atmega328* const mega)
+static void atmega328_set_txc0(struct atmega328* const mega)
 {
     if((mega->avr.dmem.mem[ATMEGA328_UCSR0B_LOC] & (1 << 6)) != 0)
     { // interrupt is enabled
@@ -59,7 +59,7 @@ void atmega328_set_txc0(struct atmega328* const mega)
     }
 }
 
-void atmega328_set_udre0(struct atmega328* const mega)
+static void atmega328_set_udre0(struct atmega328* const mega)
 {
     if((mega->avr.dmem.mem[ATMEGA328_UCSR0B_LOC] & (1 << 5)) != 0)
     { // interrupt is enabled
@@ -92,7 +92,7 @@ void atmega328_uart0_write(struct atmega328 * const mega, const uint8_t value)
     }
 }
 
-void atmega328_ucsr0a_write_cb(void* arg, uint8_t value)
+static void atmega328_ucsr0a_write_cb(void* arg, uint8_t value)
 {
     struct atmega328* const mega = (struct atmega328*) arg;
     // TXC0 is cleared by writing a 1, all other bits in this reg are automatic
@@ -102,7 +102,7 @@ void atmega328_ucsr0a_write_cb(void* arg, uint8_t value)
     }
 }
 
-void atmega328_ucsr0b_write_cb(void* arg, uint8_t value)
+static void atmega328_ucsr0b_write_cb(void* arg, uint8_t value)
 {
     struct atmega328* const mega = (struct atmega328*) arg;
 
@@ -139,7 +139,7 @@ void atmega328_ucsr0b_write_cb(void* arg, uint8_t value)
     mega->avr.dmem.mem[ATMEGA328_UCSR0B_LOC] = value;
 }
 
-uint8_t atmega328_udr0_read_cb(void* arg, uint8_t value)
+static uint8_t atmega328_udr0_read_cb(void* arg, uint8_t value)
 {
     struct atmega328* const mega = (struct atmega328*) arg;
     if (mega->uart0_rx_fifo_state > 0)
@@ -164,16 +164,16 @@ uint8_t atmega328_udr0_read_cb(void* arg, uint8_t value)
     return value;
 }
 
-void atmega328_udr0_write_cb(void* arg, uint8_t value)
+static void atmega328_udr0_write_cb(void* arg, uint8_t value)
 {
     struct atmega328* const mega = (struct atmega328*) arg;
-    mega->uart0_cb(mega->uart0_cb_arg, value);
+    mega->callbacks.uart0(mega->callbacks.uart0_arg, value);
     // trigger interrupts
     atmega328_set_txc0(mega);
     atmega328_set_udre0(mega);
 }
 
-void atmega328_sreg_write_cb(void* arg, uint8_t value)
+static void atmega328_sreg_write_cb(void* arg, uint8_t value)
 {
     struct atmega328* const mega = (struct atmega328*) arg;
     // check if enabling interrupts
@@ -206,40 +206,71 @@ void atmega328_sreg_write_cb(void* arg, uint8_t value)
     mega->avr.dmem.mem[ATMEGA328_SREG_LOC] = value;
 }
 
-void atmega328_init_regs(struct avr_dmem * const dmem)
+static void atmega328_init_regs(struct avr_dmem * const dmem)
 {
     dmem->mem[ATMEGA328_UCSR0A_LOC] = 0x20;
     dmem->mem[ATMEGA328_UCSR0B_LOC] = 0x00;
     dmem->mem[ATMEGA328_UCSR0C_LOC] = 0x06;
 }
 
-void atmega328_reinit(struct atmega328 * const mega)
-{
-    memset(mega->avr.dmem.mem, 0, mega->avr.dmem.size *
-           sizeof (*mega->avr.dmem.mem));
-    memset(mega->avr.pmem.decoded, 0, mega->avr.pmem.size *
-           sizeof (*mega->avr.pmem.decoded));
-    memset(mega->avr.pmem.mem, 0, mega->avr.pmem.size *
-           sizeof (*mega->avr.pmem.mem));
-
-    atmega328_init_regs(&mega->avr.dmem);
-
-    mega->avr.pc = 0;
+static uint32_t atmega328_boot_reset_addr(struct atmega328 * const mega) {
+    switch (mega->config.bootsz)
+    {
+    case 0:
+        return 0x3800;
+    case 1:
+        return 0x3c00;
+    case 2:
+        return 0x3e00;
+    case 3:
+        return 0x3f00;
+    }
+    return 0;
 }
 
-void atmega328_sleep_cb(void* arg, uint8_t sleep)
+static void atmega328_init_pc(struct atmega328 * const mega) {
+    mega->avr.pc = (mega->config.bootrst != 0) ? 0 : atmega328_boot_reset_addr(mega);
+}
+
+void atmega328_reinit(struct atmega328 * const mega)
+{
+    struct avr* const avr = &(mega->avr);
+    memset(avr->dmem.mem, 0, avr->dmem.size * sizeof (*avr->dmem.mem));
+    memset(avr->pmem.decoded, 0, avr->pmem.size * sizeof (*avr->pmem.decoded));
+    memset(avr->pmem.mem, 0, avr->pmem.size * sizeof (*avr->pmem.mem));
+
+    atmega328_init_regs(&avr->dmem);
+    atmega328_init_pc(mega);
+}
+
+static void atmega328_sleep_cb(void* arg, uint8_t sleep)
 {
     struct atmega328* mega = (struct atmega328*) arg;
     if ((mega->avr.dmem.mem[ATMEGA328_MCUCR_LOC] & (1 << 5)) != 0)
     {
-        mega->sleep_cb(mega->sleep_cb_arg, sleep);
+        mega->callbacks.sleep(mega->callbacks.sleep_arg, sleep);
     }
 }
 
-void atmega328_init(struct atmega328* const mega)
+static uint32_t atmega328_iv_cb(void* arg, uint32_t iv)
+{
+    struct atmega328* mega = (struct atmega328*) arg;
+    if ((mega->avr.dmem.mem[ATMEGA328_MCUCR_LOC] & (1 << 1)) != 0)
+    {
+        iv += atmega328_boot_reset_addr(mega);
+    }
+    return iv;
+}
+
+void atmega328_init(struct atmega328 * const mega,
+    const struct atmega328_callbacks callbacks,
+    const struct atmega328_config config)
 {
     mega->uart0_rx_fifo_state = 0;
     mega->uart1_rx_fifo_state = 0;
+
+    mega->config = config;
+    mega->callbacks = callbacks;
 
     struct avr* const avr = &(mega->avr);
     struct avr_dmem* const dmem = &(avr->dmem);
@@ -247,7 +278,7 @@ void atmega328_init(struct atmega328* const mega)
 
     // give access to arrays
     dmem->mem = mega->dmem;
-    dmem->callbacks = mega->callbacks;
+    dmem->callbacks = mega->dmem_callbacks;
     dmem->size = ATMEGA328_DMEM_SIZE;
 
     pmem->mem = mega->pmem;
@@ -272,10 +303,15 @@ void atmega328_init(struct atmega328* const mega)
     dmem->rampd_loc = ATMEGA328_RAMPD_LOC;
     dmem->eind_loc = ATMEGA328_EIND_LOC;
 
-    avr_init(avr);
+    struct avr_callbacks avr_callbacks = {
+        .sleep = &atmega328_sleep_cb,
+        .sleep_arg = mega,
+        .iv = &atmega328_iv_cb,
+        .iv_arg = mega
+    };
 
-    avr->sleep_cb = &atmega328_sleep_cb;
-    avr->sleep_cb_arg = mega;
+    avr_init(avr, avr_callbacks);
+    atmega328_init_pc(mega);
 
     // initialise version specific callbacks
     dmem->callbacks[ATMEGA328_UDR0_LOC -

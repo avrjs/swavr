@@ -60,17 +60,29 @@
 #define ATMEGA128_INT_VECT_USART0_UDRE (0x26)
 #define ATMEGA128_INT_VECT_USART0_TXC (0x28)
 
+struct atmega128_callbacks
+{
+    void (*sleep)(void*, uint8_t);
+    void* sleep_arg;
+    void(*uart0)(void*, uint8_t);
+    void* uart0_arg;
+};
+
+struct atmega128_config
+{
+    unsigned char bootsz;
+    unsigned char bootrst;
+};
+
 struct atmega128
 {
-    void (*sleep_cb)(void*, uint8_t);
-    void* sleep_cb_arg;
+    struct atmega128_callbacks callbacks;
+    struct atmega128_config config;
     uint8_t dmem[ATMEGA128_DMEM_SIZE];
-    struct avr_dmem_cb callbacks[ATMEGA128_IO_REGISTERS_LENGTH];
+    struct avr_dmem_cb dmem_callbacks[ATMEGA128_IO_REGISTERS_LENGTH];
     struct avr_pmem_decoded decoded[ATMEGA128_PMEM_SIZE];
     uint16_t pmem[ATMEGA128_PMEM_SIZE];
     struct avr avr;
-    void(*uart0_cb)(void*, uint8_t);
-    void* uart0_cb_arg;
     uint8_t uart0_rx_fifo;
     uint8_t uart0_rx_errs; // these are the errors that get shifted with the
     // data directly above
@@ -86,7 +98,9 @@ void atmega128_tick(struct atmega128 * const mega);
 void atmega128_uart0_write(struct atmega128 * const mega,
                             const uint8_t value);
 void atmega128_reinit(struct atmega128 * const mega);
-void atmega128_init(struct atmega128 * const mega);
+void atmega128_init(struct atmega128 * const mega,
+    const struct atmega128_callbacks callbacks,
+    const struct atmega128_config config);
 int atmega128_load_hex(struct atmega128 * const mega,
                        const char* const filename);
 

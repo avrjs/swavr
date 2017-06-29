@@ -24,6 +24,24 @@
 
 #include <string.h>
 
+#include <stdarg.h>
+#include <stdio.h>
+
+#ifndef DEBUG
+#define DEBUG (0)
+#endif
+
+int avrjs_debug_printf(const char *const fmt, ...) {
+  int res = 0;
+  if (DEBUG != 0) {
+    va_list args;
+    va_start(args, fmt);
+    res = vfprintf(stdout, fmt, args);
+    va_end(args);
+  }
+  return res;
+}
+
 void avr_dmem_write(struct avr_dmem * const dmem, const uint32_t address,
                     uint8_t value)
 {
@@ -41,7 +59,8 @@ void avr_dmem_write(struct avr_dmem * const dmem, const uint32_t address,
     }
 }
 
-uint8_t avr_dmem_read(const struct avr_dmem * const dmem, const uint32_t address)
+uint8_t avr_dmem_read(const struct avr_dmem * const dmem,
+    const uint32_t address)
 {
     uint8_t value = dmem->mem[address];
     const uint16_t io_address = address - dmem->io_resisters_start;
@@ -97,7 +116,8 @@ void avr_pmem_write(struct avr_pmem * const pmem, const uint32_t address,
                               value);
 }
 
-void avr_pmem_write_byte(struct avr_pmem * const pmem, const uint32_t address, const uint8_t value)
+void avr_pmem_write_byte(struct avr_pmem * const pmem, const uint32_t address,
+        const uint8_t value)
 {
     const uint32_t w_address = address >> 1;
     uint16_t w = pmem->mem[w_address];
@@ -280,11 +300,12 @@ void avr_skip_next_instruction(struct avr * const avr)
     avr->pc += 1 + avr->pmem.decoded[avr->pc + 1].length;
 }
 
-unsigned char avr_interrupt_nocheck(struct avr* const avr, const uint32_t vector)
+unsigned char avr_interrupt_nocheck(struct avr* const avr,
+    const uint32_t vector)
 {
-    if ((avr->asleep != 0) && (avr->sleep_cb != 0))
+    if ((avr->asleep != 0) && (avr->callbacks.sleep != 0))
     {
-        avr->sleep_cb(avr->sleep_cb_arg, 0);
+        avr->callbacks.sleep(avr->callbacks.sleep_arg, 0);
         avr->asleep = 0;
     }
     if (avr->interrupt_vector == 0)
@@ -297,6 +318,7 @@ unsigned char avr_interrupt_nocheck(struct avr* const avr, const uint32_t vector
 
 unsigned char avr_interrupt(struct avr* const avr, const uint32_t vector)
 {
+    avrjs_debug_printf("* Interrupt *");
     if (avr_sreg_read_bit(&avr->dmem, AVR_SREG_INTERRUPT_BIT) != 0)
     { // global interrupt enabled
         return avr_interrupt_nocheck(avr, vector);
@@ -315,7 +337,8 @@ void avr_interrupt_call(struct avr* const avr)
     }
     avr_sreg_clear_bit(&(avr->dmem), AVR_SREG_INTERRUPT_BIT);
 
-    avr->pc = avr->interrupt_vector;
+    avrjs_debug_printf("* Interrupt_CB *");
+    avr->pc = avr->callbacks.iv(avr->callbacks.iv_arg, avr->interrupt_vector);
     avr->interrupt_vector = 0;
 }
 
@@ -416,18 +439,25 @@ void avr_ins_nop(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     (void) avr;
     (void) arg0;
     (void) arg1;
+    avrjs_debug_printf("nop ");
 
     ++avr->pc;
 }
 
 void avr_ins_movw(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
+
     arg0 <<= 1;
     arg1 <<= 1;
-    avr_dmem_write(&(avr->dmem), (uint32_t) arg0,
-                   avr_dmem_read(&(avr->dmem), (uint32_t) arg1));
-    avr_dmem_write(&(avr->dmem), (uint32_t) arg0 + 1,
-                   avr_dmem_read(&(avr->dmem), (uint32_t) arg1 + 1));
+    uint8_t vall = avr_dmem_read(&(avr->dmem), (uint32_t) arg1);
+    uint8_t valh = avr_dmem_read(&(avr->dmem), (uint32_t) arg1 + 1);
+
+    uint16_t val = vall | (((uint16_t)valh) << 8);
+    avrjs_debug_printf("movw\t%02x,\t%02x:\t%u ", arg0, arg1,
+        val);
+
+    avr_dmem_write(&(avr->dmem), (uint32_t) arg0, vall);
+    avr_dmem_write(&(avr->dmem), (uint32_t) arg0 + 1, valh);
 
     ++avr->pc;
 }
@@ -440,6 +470,9 @@ void avr_ins_muls(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const int8_t Rrs = (Rr & 0x7F) - (Rr & 0x80);
 
     const int16_t R = ((int16_t) Rds) * ((int16_t) Rrs);
+
+    avrjs_debug_printf("muls\t%02x,\t%02x:\t%d * %d = %d ", arg0,
+        arg1, Rds, Rrs, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry6(sreg, R);
@@ -459,6 +492,9 @@ void avr_ins_mulsu(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     int16_t R = ((int16_t) Rds) * ((uint16_t) Rr);
 
+    avrjs_debug_printf("mulsu\t%02x,\t%02x:\t%d * %u = %d ", arg0,
+        arg1, Rds, Rr, R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry6(sreg, R);
     avr_sreg_zero2(sreg, R);
@@ -471,26 +507,76 @@ void avr_ins_mulsu(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_fmul(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    // TODO: fmul
+    const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
+    const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
+
+    const uint16_t R = (((uint16_t) Rd) * ((uint16_t) Rr)) << 1;
+
+    avrjs_debug_printf("fmul\t%02x,\t%02x:\t(%u * %u) << 1 = %u ",
+        arg0, arg1, Rd, Rr, R);
+
+    uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
+    avr_sreg_carry6(sreg, R);
+    avr_sreg_zero2(sreg, R);
+
+    avr_dmem_write(&(avr->dmem), 0, R);
+    avr_dmem_write(&(avr->dmem), 1, R >> 8);
+
+    ++avr->pc;
 }
 
 void avr_ins_fmuls(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    // TODO: fmul
+    const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
+    const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
+    const int8_t Rds = (Rd & 0x7F) - (Rd & 0x80);
+    const int8_t Rrs = (Rr & 0x7F) - (Rr & 0x80);
+
+    const int16_t R = (((int16_t) Rds) * ((int16_t) Rrs)) << 1;
+
+    avrjs_debug_printf("fmuls\t%02x,\t%02x:\t(%d * %d) << 1 = %d ",
+        arg0, arg1, Rds, Rrs, R);
+
+    uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
+    avr_sreg_carry6(sreg, R);
+    avr_sreg_zero2(sreg, R);
+
+    avr_dmem_write(&(avr->dmem), 0, R);
+    avr_dmem_write(&(avr->dmem), 1, R >> 8);
+
+    ++avr->pc;
 }
 
 void avr_ins_fmulsu(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    // TODO: fmul
+    const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
+    const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
+    const int8_t Rds = (Rd & 0x7F) - (Rd & 0x80);
+
+    int16_t R = (((int16_t) Rds) * ((uint16_t) Rr)) << 1;
+
+    avrjs_debug_printf("fmulsu\t%02x,\t%02x:\t(%d * %u) << 1 = %d ",
+        avr->pc, arg0, arg1, Rds, Rr, R);
+
+    uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
+    avr_sreg_carry6(sreg, R);
+    avr_sreg_zero2(sreg, R);
+
+    avr_dmem_write(&(avr->dmem), 0, R);
+    avr_dmem_write(&(avr->dmem), 1, R >> 8);
+
+    ++avr->pc;
 }
 
 void avr_ins_cpc(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
     const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
+    const uint8_t C = avr_sreg_read_bit(&(avr->dmem), AVR_SREG_CARRY_BIT);
+    const uint8_t R = (Rd - Rr) - C;
 
-    const uint8_t R = (Rd - Rr) - avr_sreg_read_bit(&(avr->dmem),
-                                                    AVR_SREG_CARRY_BIT);
+    avrjs_debug_printf("cpc\t%02x,\t%02x:\t(%u - %u) - %u = %u ",
+        arg0, arg1, Rd, Rr, C, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry4(sreg, Rd, Rr, R);
@@ -507,9 +593,11 @@ void avr_ins_sbc(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
     const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
+    const uint8_t C = avr_sreg_read_bit(&(avr->dmem), AVR_SREG_CARRY_BIT);
+    const uint8_t R = (Rd - Rr) - C;
 
-    const uint8_t R = (Rd - Rr) - avr_sreg_read_bit(&(avr->dmem),
-                                                    AVR_SREG_CARRY_BIT);
+    avrjs_debug_printf("sbc\t%02x,\t%02x:\t(%u - %u) - %u = %u ",
+        arg0, arg1, Rd, Rr, C, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry4(sreg, Rd, Rr, R);
@@ -531,6 +619,9 @@ void avr_ins_add(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     const uint8_t R = ((Rd + Rr) & 0xFF);
 
+    avrjs_debug_printf("add\t%02x,\t%02x:\t%u + %u = %u ",
+        arg0, arg1, Rd, Rr, R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry1(sreg, Rd, Rr, R);
     avr_sreg_zero1(sreg, R);
@@ -549,6 +640,9 @@ void avr_ins_cpse(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
     const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
 
+    avrjs_debug_printf("cpse\t%02x,\t%02x:\t%u == %u ",
+        arg0, arg1, Rd, Rr);
+
     if (Rd == Rr)
     {
         avr_skip_next_instruction(avr);
@@ -565,6 +659,9 @@ void avr_ins_cp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
 
     const uint8_t R = Rd - Rr;
+
+    avrjs_debug_printf("cp\t%02x,\t%02x:\t%u - %u = %u ",
+        arg0, arg1, Rd, Rr, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry4(sreg, Rd, Rr, R);
@@ -584,6 +681,9 @@ void avr_ins_sub(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     const uint8_t R = Rd - Rr;
 
+    avrjs_debug_printf("sub\t%02x,\t%02x:\t%u - %u = %u ",
+        arg0, arg1, Rd, Rr, R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry4(sreg, Rd, Rr, R);
     avr_sreg_zero1(sreg, R);
@@ -601,9 +701,11 @@ void avr_ins_adc(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
     const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
+    const uint8_t C = avr_sreg_read_bit(&(avr->dmem), AVR_SREG_CARRY_BIT);
+    const uint8_t R = Rd + Rr + C;
 
-    const uint8_t R = Rd + Rr + avr_sreg_read_bit(&(avr->dmem),
-                                                  AVR_SREG_CARRY_BIT);
+    avrjs_debug_printf("adc\t%02x,\t%02x:\t%u + %u + %u = %u ",
+        arg0, arg1, Rd, Rr, C, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry1(sreg, Rd, Rr, R);
@@ -625,6 +727,9 @@ void avr_ins_and(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     const uint8_t R = Rd & Rr;
 
+    avrjs_debug_printf("and\t%02x,\t%02x:\t%u & %u = %u ",
+        arg0, arg1, Rd, Rr, R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_zero1(sreg, R);
     avr_sreg_negative1(sreg, R);
@@ -642,6 +747,9 @@ void avr_ins_eor(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
 
     const uint8_t R = Rd ^ Rr;
+
+    avrjs_debug_printf("eor\t%02x,\t%02x:\t%u ^ %u = %u ",
+        arg0, arg1, Rd, Rr, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_zero1(sreg, R);
@@ -661,6 +769,9 @@ void avr_ins_or(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     const uint8_t R = Rd | Rr;
 
+    avrjs_debug_printf("or\t%02x,\t%02x:\t%u | %u = %u ", arg0,
+        arg1, Rd, Rr, R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_zero1(sreg, R);
     avr_sreg_negative1(sreg, R);
@@ -674,7 +785,11 @@ void avr_ins_or(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_mov(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), arg1));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg1);
+
+    avrjs_debug_printf("mov\t%02x,\t%02x:\t%u ", arg0, arg1, val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     ++avr->pc;
 }
@@ -685,6 +800,9 @@ void avr_ins_cpi(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
 
     const uint8_t R = Rd - arg1;
+
+    avrjs_debug_printf("cpi\t%02x,\t%02x:\t%u - %u = %u ",
+        arg0 - 16, arg1, Rd, arg1, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry4(sreg, Rd, arg1, R);
@@ -701,9 +819,11 @@ void avr_ins_sbci(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     arg0 += 16;
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
+    const uint8_t C = avr_sreg_read_bit(&(avr->dmem), AVR_SREG_CARRY_BIT);
+    const uint8_t R = (Rd - arg1) - C;
 
-    const uint8_t R = (Rd - arg1) - avr_sreg_read_bit(&(avr->dmem),
-                                                      AVR_SREG_CARRY_BIT);
+    avrjs_debug_printf("sbci\t%02x,\t%02x:\t(%u - %u) - %u = %u ",
+        arg0 - 16, arg1, Rd, arg1, C, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry4(sreg, Rd, arg1, R);
@@ -725,6 +845,9 @@ void avr_ins_subi(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     const uint8_t R = Rd - arg1;
 
+    avrjs_debug_printf("subi\t%02x,\t%02x:\t%u - %u = %u ",
+        arg0 - 16, arg1, Rd, arg1,  R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry4(sreg, Rd, arg1, R);
     avr_sreg_zero3(sreg, R);
@@ -745,6 +868,9 @@ void avr_ins_ori(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     const uint8_t R = Rd | arg1;
 
+    avrjs_debug_printf("ori\t%02x,\t%02x:\t%u | %u = %u ",
+        arg0 - 16, arg1, Rd, arg1,  R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_zero1(sreg, R);
     avr_sreg_negative1(sreg, R);
@@ -763,6 +889,9 @@ void avr_ins_andi(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     const uint8_t R = Rd & arg1;
 
+    avrjs_debug_printf("andi\t%02x,\t%02x:\t%u & %u = %u ",
+        arg0 - 16, arg1, Rd, arg1,  R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_zero1(sreg, R);
     avr_sreg_negative1(sreg, R);
@@ -776,34 +905,52 @@ void avr_ins_andi(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_ld_zpq(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    avr_dmem_write(&(avr->dmem), arg0,
-                   avr_dmem_read(&(avr->dmem), avr_rampz_z_read(&(avr->dmem)) +
-                                 arg1));
+    const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), Z + arg1);
+
+    avrjs_debug_printf("ld\t%02x,\t(Z + %02x):\t*%04x -> %u ",
+        avr->pc, arg0, arg1, Z + arg1, val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     ++avr->pc;
 }
 
 void avr_ins_ld_ypq(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    avr_dmem_write(&(avr->dmem), arg0,
-                   avr_dmem_read(&(avr->dmem), avr_rampy_y_read(&(avr->dmem)) +
-                                 arg1));
+    const uint32_t Y = avr_rampy_y_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), Y + arg1);
+
+    avrjs_debug_printf("ld\t%02x,\t(Y + %02x):\t*%04x -> %u ",
+        avr->pc, arg0, arg1, Y + arg1, val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     ++avr->pc;
 }
 
 void avr_ins_st_zpq(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    avr_dmem_write(&(avr->dmem), avr_rampz_z_read(&(avr->dmem)) + arg1,
-                   avr_dmem_read(&(avr->dmem), arg0));
+    const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
+
+    avrjs_debug_printf("st\t%02x,\t(Z + %02x):\t%u -> *%04x ",
+        arg0, arg1, val, Z + arg1);
+
+    avr_dmem_write(&(avr->dmem),  Z + arg1, val);
 
     ++avr->pc;
 }
 
 void avr_ins_st_ypq(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    avr_dmem_write(&(avr->dmem), avr_rampy_y_read(&(avr->dmem)) + arg1,
-                   avr_dmem_read(&(avr->dmem), arg0));
+    const uint32_t Y = avr_rampy_y_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
+
+    avrjs_debug_printf("st\t%02x,\t(Y + %02x):\t%u -> *%04x ",
+        arg0, arg1, val, Y + arg1);
+
+    avr_dmem_write(&(avr->dmem), Y + arg1, val);
 
     ++avr->pc;
 }
@@ -818,8 +965,12 @@ void avr_ins_lds(struct avr * const avr, uint16_t arg0, uint16_t arg1)
         addr |= (((uint32_t) avr_dmem_read(&(avr->dmem), avr->dmem.rampd_loc))
                 << 16);
     }
+    const uint8_t val = avr_dmem_read(&(avr->dmem), addr);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), addr));
+    avrjs_debug_printf("lds\t%02x,\t%04x:\t%u -> *%04x ",
+        arg0, addr, val, addr);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     avr->pc += 2;
 }
@@ -828,8 +979,12 @@ void avr_ins_ld_zp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), Z);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), Z));
+    avrjs_debug_printf("ld\t%02x,\tZ+:\t*%04x -> %u ", arg0, Z,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     avr_rampz_z_write(&(avr->dmem), Z + 1);
 
@@ -840,8 +995,12 @@ void avr_ins_ld_mz(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Z = avr_rampz_z_read(&(avr->dmem)) - 1;
+    const uint8_t val = avr_dmem_read(&(avr->dmem), Z);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), Z));
+    avrjs_debug_printf("ld\t%02x,\t-Z:\t*%04x -> %u ", arg0, Z,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     avr_rampz_z_write(&(avr->dmem), Z);
 
@@ -852,8 +1011,12 @@ void avr_ins_lpm_z(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Z = avr_z_read(&(avr->dmem));
+    const uint8_t val = avr_pmem_read_byte(&(avr->pmem), Z);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_pmem_read_byte(&(avr->pmem), Z));
+    avrjs_debug_printf("lpm\t%02x,\tZ:\t*%04x = %u ", arg0, Z,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     ++avr->pc;
 }
@@ -861,9 +1024,13 @@ void avr_ins_lpm_z(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_lpm_zp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    const uint32_t Z = avr_z_read(&(avr->dmem));
+    const uint16_t Z = avr_z_read(&(avr->dmem));
+    const uint8_t val = avr_pmem_read_byte(&(avr->pmem), Z);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_pmem_read_byte(&(avr->pmem), Z));
+    avrjs_debug_printf("lpm\t%02x,\tZ+:\t*%04x = %u ", arg0, Z,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     avr_z_write(&(avr->dmem), Z + 1);
 
@@ -873,9 +1040,13 @@ void avr_ins_lpm_zp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_elpm_z(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    avr_dmem_write(&(avr->dmem), arg0,
-                   avr_pmem_read_byte(&(avr->pmem),
-                                      avr_rampz_z_read(&(avr->dmem))));
+    const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
+    const uint8_t val = avr_pmem_read_byte(&(avr->pmem), Z);
+
+    avrjs_debug_printf("elpm\t%02x,\tZ:\t*%04x = %u ", arg0, Z,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     ++avr->pc;
 }
@@ -884,8 +1055,12 @@ void avr_ins_elpm_zp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
+    const uint8_t val = avr_pmem_read_byte(&(avr->pmem), Z);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_pmem_read_byte(&(avr->pmem), Z));
+    avrjs_debug_printf("elpm\t%02x,\tZ+:\t*%04x = %u ", arg0, Z,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     avr_rampz_z_write(&(avr->dmem), Z + 1);
 
@@ -896,8 +1071,12 @@ void avr_ins_ld_yp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Y = avr_rampy_y_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), Y);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), Y));
+    avrjs_debug_printf("ld\t%02x,\tY+:\t*%04x -> %u ", arg0, Y,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     avr_rampy_y_write(&(avr->dmem), Y + 1);
 
@@ -908,8 +1087,12 @@ void avr_ins_ld_my(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Y = avr_rampy_y_read(&(avr->dmem)) - 1;
+    const uint8_t val = avr_dmem_read(&(avr->dmem), Y);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), Y));
+    avrjs_debug_printf("ld\t%02x,\t-Y:\t*%04x -> %u ", arg0, Y,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     avr_rampy_y_write(&(avr->dmem), Y);
 
@@ -919,8 +1102,13 @@ void avr_ins_ld_my(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_ld_x(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    avr_dmem_write(&(avr->dmem), arg0,
-                   avr_dmem_read(&(avr->dmem), avr_rampx_x_read(&(avr->dmem))));
+    const uint32_t X = avr_rampx_x_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), X);
+
+    avrjs_debug_printf("ld\t%02x,\tX:\t*%04x -> %u ", arg0, X,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     ++avr->pc;
 }
@@ -929,8 +1117,12 @@ void avr_ins_ld_xp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t X = avr_rampx_x_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), X);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), X));
+    avrjs_debug_printf("ld\t%02x,\tX+:\t*%04x -> %u ", arg0, X,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     avr_rampx_x_write(&(avr->dmem), X + 1);
 
@@ -941,8 +1133,12 @@ void avr_ins_ld_mx(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t X = avr_rampx_x_read(&(avr->dmem)) - 1;
+    const uint8_t val = avr_dmem_read(&(avr->dmem), X);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), X));
+    avrjs_debug_printf("ld\t%02x,\t-X:\t*%04x -> %u ", arg0, X,
+        val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     avr_rampx_x_write(&(avr->dmem), X);
 
@@ -952,7 +1148,11 @@ void avr_ins_ld_mx(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_pop(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    avr_dmem_write(&(avr->dmem), arg0, avr_pop(&(avr->dmem)));
+    const uint8_t val = avr_pop(&(avr->dmem));
+
+    avrjs_debug_printf("pop\t%02x:\t%u ", arg0, val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     ++avr->pc;
 }
@@ -960,13 +1160,17 @@ void avr_ins_pop(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_sts(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
     uint32_t addr = avr->pmem.mem[avr->pc + 1];
     if (avr->dmem.rampd_loc < avr->dmem.size)
     {
         addr |= (((uint32_t) avr_dmem_read(&(avr->dmem), avr->dmem.rampd_loc))
                 << 16);
     }
-    avr_dmem_write(&(avr->dmem), addr, avr_dmem_read(&(avr->dmem), arg0));
+
+    avrjs_debug_printf("sts\t%02x:\t%u -> *%04x ", arg0, val, addr);
+
+    avr_dmem_write(&(avr->dmem), addr, val);
 
     avr->pc += 2;
 }
@@ -975,8 +1179,11 @@ void avr_ins_st_zp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
 
-    avr_dmem_write(&(avr->dmem), Z, avr_dmem_read(&(avr->dmem), arg0));
+    avrjs_debug_printf("st\t%02x,\tZ+:\t%u -> *%04x ", arg0, val, Z);
+
+    avr_dmem_write(&(avr->dmem), Z, val);
 
     avr_rampz_z_write(&(avr->dmem), Z + 1);
 
@@ -987,8 +1194,11 @@ void avr_ins_st_mz(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Z = avr_rampz_z_read(&(avr->dmem)) - 1;
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
 
-    avr_dmem_write(&(avr->dmem), Z, avr_dmem_read(&(avr->dmem), arg0));
+    avrjs_debug_printf("st\t%02x,\t-Z:\t%u -> *%04x ", arg0, val, Z);
+
+    avr_dmem_write(&(avr->dmem), Z, val);
 
     avr_rampz_z_write(&(avr->dmem), Z);
 
@@ -998,10 +1208,14 @@ void avr_ins_st_mz(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_xch(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    const uint32_t Z = avr_rampz_z_read(&(avr->dmem)); // unsure if this instruction uses RAMPZ or not
+    const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
     const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg0);
+    const uint8_t Rm = avr_dmem_read(&(avr->dmem), Z);
 
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), Z));
+    avrjs_debug_printf("xch\t%02x:\t%u -> *%04x, %u ",
+		       arg0, Rr, Z, Rm);
+
+    avr_dmem_write(&(avr->dmem), arg0, Rm);
     avr_dmem_write(&(avr->dmem), Z, Rr);
 
     ++avr->pc;
@@ -1010,10 +1224,14 @@ void avr_ins_xch(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_las(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    const uint32_t Z = avr_rampz_z_read(&(avr->dmem)); // unsure if this instruction uses RAMPZ or not
+    const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
     const uint8_t Zv = avr_dmem_read(&(avr->dmem), Z);
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0) | Zv;
 
-    avr_dmem_write(&(avr->dmem), Z, avr_dmem_read(&(avr->dmem), arg0) | Zv); // no idea if this is right
+    avrjs_debug_printf("las\t%02x:\t%u -> *%04x, %u ",
+		       arg0, val, Z, Zv);
+
+    avr_dmem_write(&(avr->dmem), Z, val);
     avr_dmem_write(&(avr->dmem), arg0, Zv);
 
     ++avr->pc;
@@ -1022,10 +1240,14 @@ void avr_ins_las(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_lac(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    const uint32_t Z = avr_rampz_z_read(&(avr->dmem)); // unsure if this instruction uses RAMPZ or not
+    const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
     const uint8_t Zv = avr_dmem_read(&(avr->dmem), Z);
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0) & ~Zv;
 
-    avr_dmem_write(&(avr->dmem), Z, avr_dmem_read(&(avr->dmem), arg0) & ~Zv); // no idea if this is right
+    avrjs_debug_printf("lac\t%02x:\t%u -> *%04x, %u ",
+		       arg0, val, Z, Zv);
+
+    avr_dmem_write(&(avr->dmem), Z, val);
     avr_dmem_write(&(avr->dmem), arg0, Zv);
 
     ++avr->pc;
@@ -1034,10 +1256,14 @@ void avr_ins_lac(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_lat(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    const uint32_t Z = avr_rampz_z_read(&(avr->dmem)); // unsure if this instruction uses RAMPZ or not
+    const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
     const uint8_t Zv = avr_dmem_read(&(avr->dmem), Z);
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0) ^ Zv;
 
-    avr_dmem_write(&(avr->dmem), Z, avr_dmem_read(&(avr->dmem), arg0) ^ Zv); // no idea if this is right
+    avrjs_debug_printf("lat\t%02x:\t%u -> *%04x, %u ",
+		       arg0, val, Z, Zv);
+
+    avr_dmem_write(&(avr->dmem), Z, val);
     avr_dmem_write(&(avr->dmem), arg0, Zv);
 
     ++avr->pc;
@@ -1047,8 +1273,11 @@ void avr_ins_st_yp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Y = avr_rampy_y_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
 
-    avr_dmem_write(&(avr->dmem), Y, avr_dmem_read(&(avr->dmem), arg0));
+    avrjs_debug_printf("st\t%02x,\tY+:\t%u -> *%04x ", arg0, val, Y);
+
+    avr_dmem_write(&(avr->dmem), Y, val);
 
     avr_rampy_y_write(&(avr->dmem), Y + 1);
 
@@ -1059,8 +1288,11 @@ void avr_ins_st_my(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t Y = avr_rampy_y_read(&(avr->dmem)) - 1;
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
 
-    avr_dmem_write(&(avr->dmem), Y, avr_dmem_read(&(avr->dmem), arg0));
+    avrjs_debug_printf("st\t%02x,\t-Y:\t%u -> *%04x ", arg0, val, Y);
+
+    avr_dmem_write(&(avr->dmem), Y, val);
 
     avr_rampy_y_write(&(avr->dmem), Y);
 
@@ -1071,8 +1303,11 @@ void avr_ins_st_x(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t X = avr_rampx_x_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
 
-    avr_dmem_write(&(avr->dmem), X, avr_dmem_read(&(avr->dmem), arg0));
+    avrjs_debug_printf("st\t%02x,\tX:\t%u -> *%04x ", arg0, val, X);
+
+    avr_dmem_write(&(avr->dmem), X, val);
 
     ++avr->pc;
 }
@@ -1081,8 +1316,11 @@ void avr_ins_st_xp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t X = avr_rampx_x_read(&(avr->dmem));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
 
-    avr_dmem_write(&(avr->dmem), X, avr_dmem_read(&(avr->dmem), arg0));
+    avrjs_debug_printf("st\t%02x,\tX+:\t%u -> *%04x ", arg0, val, X);
+
+    avr_dmem_write(&(avr->dmem), X, val);
 
     avr_rampx_x_write(&(avr->dmem), X + 1);
 
@@ -1093,8 +1331,11 @@ void avr_ins_st_mx(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint32_t X = avr_rampx_x_read(&(avr->dmem)) - 1;
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
 
-    avr_dmem_write(&(avr->dmem), X, avr_dmem_read(&(avr->dmem), arg0));
+    avrjs_debug_printf("st\t%02x,\t-X:\t%u -> *%04x ", arg0, val, X);
+
+    avr_dmem_write(&(avr->dmem), X, val);
 
     avr_rampx_x_write(&(avr->dmem), X);
 
@@ -1103,7 +1344,12 @@ void avr_ins_st_mx(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_push(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    avr_push(&(avr->dmem), avr_dmem_read(&(avr->dmem), arg0));
+    (void) arg1;
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
+
+    avrjs_debug_printf("push\t%02x:\t%u ", arg0, val);
+
+    avr_push(&(avr->dmem), val);
 
     ++avr->pc;
 }
@@ -1114,6 +1360,8 @@ void avr_ins_com(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
 
     const uint8_t R = ~Rd;
+
+    avrjs_debug_printf("com\t%02x:\t~%u = %u ", arg0, Rd, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_set_bit(&(avr->dmem), AVR_SREG_CARRY_BIT);
@@ -1134,6 +1382,8 @@ void avr_ins_neg(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     const uint8_t R = (~Rd) + 1;
 
+    avrjs_debug_printf("neg\t%02x:\t(~%u + 1) = %u ", arg0, Rd, R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry7(sreg, R);
     avr_sreg_zero1(sreg, R);
@@ -1151,8 +1401,11 @@ void avr_ins_swap(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
+    const uint8_t R = ((Rd & 0x0F) << 4) | ((Rd & 0xF0) >> 4);
 
-    avr_dmem_write(&(avr->dmem), arg0, ((Rd & 0x0F) << 4) | ((Rd & 0xF0) >> 4));
+    avrjs_debug_printf("swap\t%02x:\tswap(%u) = %u ", arg0, Rd, R);
+
+    avr_dmem_write(&(avr->dmem), arg0, R);
 
     ++avr->pc;
 }
@@ -1163,6 +1416,8 @@ void avr_ins_inc(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
 
     const uint8_t R = Rd + 1;
+
+    avrjs_debug_printf("inc\t%02x:\t%u + 1 = %u ", arg0, Rd, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_zero1(sreg, R);
@@ -1180,7 +1435,9 @@ void avr_ins_asr(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     (void) arg1;
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
 
-    const uint8_t R = Rd >> 1;
+    const uint8_t R = (Rd >> 1) | (Rd & (1 << 7));
+
+    avrjs_debug_printf("asr\t%02x:\tasr(%u) = %u ", arg0, Rd, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry3(sreg, Rd);
@@ -1200,6 +1457,8 @@ void avr_ins_lsr(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
 
     const uint8_t R = Rd >> 1;
+
+    avrjs_debug_printf("lsr\t%02x:\t%u >> 1 = %u ", arg0, Rd, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry3(sreg, Rd);
@@ -1221,6 +1480,8 @@ void avr_ins_ror(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t R = (Rd >> 1) |
             (avr_sreg_read_bit(&(avr->dmem), AVR_SREG_CARRY_BIT) << 7);
 
+    avrjs_debug_printf("ror\t%02x:\tror(%u) = %u ", arg0, Rd, R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry3(sreg, Rd);
     avr_sreg_zero1(sreg, R);
@@ -1236,6 +1497,9 @@ void avr_ins_ror(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_bset(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
+
+    avrjs_debug_printf("bset\t%02x ", arg0);
+
     avr_sreg_set_bit(&(avr->dmem), arg0);
 
     ++avr->pc;
@@ -1245,7 +1509,12 @@ void avr_ins_ijmp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
-    avr->pc = avr_z_read(&(avr->dmem));
+
+    const uint16_t Z =  avr_z_read(&(avr->dmem));
+
+    avrjs_debug_printf("ijmp:\t\t\t%04x", Z);
+
+    avr->pc = Z;
 }
 
 void avr_ins_dec(struct avr * const avr, uint16_t arg0, uint16_t arg1)
@@ -1254,6 +1523,8 @@ void avr_ins_dec(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t Rd = avr_dmem_read(&(avr->dmem), arg0);
 
     const uint8_t R = Rd - 1;
+
+    avrjs_debug_printf("dec\t%02x:\t\t%u - 1 = %u ", arg0, Rd, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_zero1(sreg, R);
@@ -1269,7 +1540,13 @@ void avr_ins_dec(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_jmp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    avr->pc = (((uint32_t) arg0) << 16) | avr->pmem.mem[avr->pc + 1];
+
+    const uint32_t addr = (((uint32_t) arg0) << 16) |
+        avr->pmem.mem[avr->pc + 1];
+
+    avrjs_debug_printf("jmp\t%04x ", addr);
+
+    avr->pc = addr;
 }
 
 void avr_ins_call(struct avr * const avr, uint16_t arg0, uint16_t arg1)
@@ -1282,24 +1559,37 @@ void avr_ins_call(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     {
         avr_push(&(avr->dmem), pc_ret >> (i << 3));
     }
-    avr->pc = (((uint32_t) arg0) << 16) | avr->pmem.mem[avr->pc + 1];
+    const uint32_t addr = (((uint32_t) arg0) << 16) |
+        avr->pmem.mem[avr->pc + 1];
+
+    avrjs_debug_printf("call\t%04x ", addr);
+
+    avr->pc = addr;
 }
 
 void avr_ins_eijmp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
-    avr->pc = avr_z_read(&(avr->dmem));
+
+    uint32_t addr = avr_z_read(&(avr->dmem));
     if (avr->dmem.eind_loc < avr->dmem.size)
     {
-        avr->pc |= ((uint32_t) avr_dmem_read(&(avr->dmem), avr->dmem.eind_loc))
+        addr |= ((uint32_t) avr_dmem_read(&(avr->dmem), avr->dmem.eind_loc))
                 << 16;
     }
+
+    avrjs_debug_printf("eijmp:\t\t\t%04x ", addr);
+
+    avr->pc = addr;
 }
 
 void avr_ins_bclr(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
+
+    avrjs_debug_printf("bclr\t%02x ", arg0);
+
     avr_sreg_clear_bit(&(avr->dmem), arg0);
 
     ++avr->pc;
@@ -1308,12 +1598,16 @@ void avr_ins_bclr(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_ret(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    avr->pc = avr_pop(&(avr->dmem));
+    uint32_t addr = avr_pop(&(avr->dmem));
     uint8_t i;
     for (i = 1; i < avr->pc_size; ++i)
     {
-        avr->pc |= ((uint32_t) avr_pop(&(avr->dmem))) << (i << 3);
+        addr |= ((uint32_t) avr_pop(&(avr->dmem))) << (i << 3);
     }
+
+    avrjs_debug_printf("ret:\t\t\t%04x ", addr);
+
+    avr->pc = addr;
 }
 
 void avr_ins_icall(struct avr * const avr, uint16_t arg0, uint16_t arg1)
@@ -1327,19 +1621,28 @@ void avr_ins_icall(struct avr * const avr, uint16_t arg0, uint16_t arg1)
         avr_push(&(avr->dmem), pc_ret >> (i << 3));
     }
 
-    avr->pc = avr_z_read(&(avr->dmem));
+    const uint16_t Z = avr_z_read(&(avr->dmem));
+
+    avrjs_debug_printf("icall:\t\t\t%04x ", Z);
+
+    avr->pc = Z;
 }
 
 void avr_ins_reti(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
-    avr->pc = avr_pop(&(avr->dmem));
+    uint32_t addr = avr_pop(&(avr->dmem));
     uint8_t i;
     for (i = 1; i < avr->pc_size; ++i)
     {
-        avr->pc |= ((uint32_t) avr_pop(&(avr->dmem))) << (i << 3);
+        addr |= ((uint32_t) avr_pop(&(avr->dmem))) << (i << 3);
     }
+
+    avrjs_debug_printf("reti:\t\t\t%04x ", addr);
+
+    avr->pc = addr;
+
     avr_sreg_set_bit(&(avr->dmem), AVR_SREG_INTERRUPT_BIT);
 }
 
@@ -1354,23 +1657,30 @@ void avr_ins_eicall(struct avr * const avr, uint16_t arg0, uint16_t arg1)
         avr_push(&(avr->dmem), pc_ret >> (i << 3));
     }
 
-    avr->pc = avr_z_read(&(avr->dmem));
+    uint32_t addr = avr_z_read(&(avr->dmem));
     if (avr->dmem.eind_loc < avr->dmem.size)
     {
-        avr->pc |= ((uint32_t) avr_dmem_read(&(avr->dmem), avr->dmem.eind_loc))
+        addr |= ((uint32_t) avr_dmem_read(&(avr->dmem), avr->dmem.eind_loc))
                 << 16;
     }
+
+    avrjs_debug_printf("eicall:\t\t\t%04x ", addr);
+
+    avr->pc = addr;
 }
 
 void avr_ins_sleep(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
-    if (avr->sleep_cb != 0)
+    if (avr->callbacks.sleep != 0)
     {
-        avr->sleep_cb(avr->sleep_cb_arg, 1);
+        avr->callbacks.sleep(avr->callbacks.sleep_arg, 1);
         avr->asleep = 1;
     }
+
+    avrjs_debug_printf("sleep ");
+
     ++avr->pc;
 }
 
@@ -1378,6 +1688,9 @@ void avr_ins_break(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
+
+    avrjs_debug_printf("break ");
+
     ++avr->pc;
 }
 
@@ -1385,6 +1698,9 @@ void avr_ins_wdr(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
+
+    avrjs_debug_printf("wdr ");
+
     ++avr->pc;
 }
 
@@ -1392,10 +1708,12 @@ void avr_ins_lpm(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
-
     const uint16_t Z = avr_z_read(&(avr->dmem));
+    const uint8_t val = avr_pmem_read_byte(&(avr->pmem), Z);
 
-    avr_dmem_write(&(avr->dmem), 0, avr_pmem_read_byte(&(avr->pmem), Z));
+    avrjs_debug_printf("lpm:\t\t\t*%04x = %u ", Z, val);
+
+    avr_dmem_write(&(avr->dmem), 0, val);
 
     ++avr->pc;
 }
@@ -1404,15 +1722,19 @@ void avr_ins_elpm_r0(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg0;
     (void) arg1;
-    avr_dmem_write(&(avr->dmem), 0,
-                   avr_pmem_read_byte(&(avr->pmem),
-                                      avr_rampz_z_read(&(avr->dmem))));
+    const uint32_t Z = avr_rampz_z_read(&(avr->dmem));
+    const uint8_t val = avr_pmem_read_byte(&(avr->pmem), Z);
+
+    avrjs_debug_printf("elpm:\t\t\t*%04x = %u ", Z, val);
+
+    avr_dmem_write(&(avr->dmem), 0, val);
 
     ++avr->pc;
 }
 
 void avr_ins_spm(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
+    avrjs_debug_printf("spm not implemented ");
     (void) arg0;
     (void) arg1;
     // TODO: SPM
@@ -1421,6 +1743,7 @@ void avr_ins_spm(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_spm_zp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
+    avrjs_debug_printf("spm Zp not implemented ");
     (void) arg0;
     (void) arg1;
     // TODO: SPM
@@ -1434,6 +1757,9 @@ void avr_ins_adiw(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint16_t Rd = avr_dmem_read(&(avr->dmem), arg0) | (Rdh << 8);
 
     const uint16_t R = ((Rd + arg1) & 0xFFFF);
+
+    avrjs_debug_printf("adiw\t%02x,\t%02x:\t%u + %u = %u ",
+        arg0, arg1, Rd, arg1, R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry2(sreg, Rdh, R);
@@ -1456,6 +1782,9 @@ void avr_ins_sbiw(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
     const uint16_t R = Rd - arg1;
 
+    avrjs_debug_printf("sbiw\t%02x,\t%02x:\t%u - %u = %u ",
+        arg0, arg1, Rd, arg1, R);
+
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry8(sreg, Rdh, R);
     avr_sreg_zero2(sreg, R);
@@ -1471,17 +1800,25 @@ void avr_ins_sbiw(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_cbi(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg1 +
+				      avr->dmem.io_resisters_start) & ~(1 << arg0);
+
+    avrjs_debug_printf("cbi\t%02x,\t%02x:\t%u ", arg0, arg1, val);
+
     avr_dmem_write(&(avr->dmem), arg1 + avr->dmem.io_resisters_start,
-                   avr_dmem_read(&(avr->dmem), arg1 +
-                                 avr->dmem.io_resisters_start) & ~(1 << arg0));
+                   val);
 
     ++avr->pc;
 }
 
 void avr_ins_sbic(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    if ((avr_dmem_read(&(avr->dmem), arg1 + avr->dmem.io_resisters_start) &
-            (1 << arg0)) == 0)
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg1 +
+        avr->dmem.io_resisters_start);
+
+    avrjs_debug_printf("sbic\t%02x,\t%02x:\t%u ", arg0, arg1, val);
+
+    if ((val & (1 << arg0)) == 0)
     {
         avr_skip_next_instruction(avr);
     }
@@ -1493,17 +1830,25 @@ void avr_ins_sbic(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_sbi(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg1 +
+				      avr->dmem.io_resisters_start) | (1 << arg0);
+
+    avrjs_debug_printf("sbi\t%02x,\t%02x:\t%u ", arg0, arg1, val);
+
     avr_dmem_write(&(avr->dmem), arg1 + avr->dmem.io_resisters_start,
-                   avr_dmem_read(&(avr->dmem), arg1 +
-                                 avr->dmem.io_resisters_start) | (1 << arg0));
+		   val);
 
     ++avr->pc;
 }
 
 void avr_ins_sbis(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    if ((avr_dmem_read(&(avr->dmem), arg1 + avr->dmem.io_resisters_start) &
-            (1 << arg0)) != 0)
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg1 +
+        avr->dmem.io_resisters_start);
+
+    avrjs_debug_printf("sbis\t%02x,\t%02x:\t%u ", arg0, arg1, val);
+
+    if ((val & (1 << arg0)) != 0)
     {
         avr_skip_next_instruction(avr);
     }
@@ -1519,6 +1864,9 @@ void avr_ins_mul(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     const uint8_t Rr = avr_dmem_read(&(avr->dmem), arg1);
 
     const uint16_t R = ((uint16_t) Rd) * ((uint16_t) Rr);
+
+    avrjs_debug_printf("mul\t%02x,\t%02x:\t%u * %u = %u ", arg0, arg1, Rd, Rr,
+        R);
 
     uint8_t* const sreg = &avr->dmem.mem[avr->dmem.sreg_loc];
     avr_sreg_carry6(sreg, R);
@@ -1542,16 +1890,24 @@ void avr_ins_mul(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_in(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    avr_dmem_write(&(avr->dmem), arg0, avr_dmem_read(&(avr->dmem), arg1 +
-                                                     avr->dmem.io_resisters_start));
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg1 +
+				      avr->dmem.io_resisters_start);
+
+    avrjs_debug_printf("in\t%02x,\t%02x:\t%u ", arg0, arg1, val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     ++avr->pc;
 }
 
 void avr_ins_out(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
+    const uint8_t val = avr_dmem_read(&(avr->dmem), arg0);
+
+    avrjs_debug_printf("in\t%02x,\t%02x:\t%u ", arg0, arg1, val);
+
     avr_dmem_write(&(avr->dmem), arg1 + avr->dmem.io_resisters_start,
-                   avr_dmem_read(&(avr->dmem), arg0));
+                   val);
 
     ++avr->pc;
 }
@@ -1559,12 +1915,20 @@ void avr_ins_out(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 void avr_ins_rjmp(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
-    avr->pc = (avr->pc + (arg0 & 0x07FF) - (arg0 & 0x0800)) + 1;
+    const int16_t offs = (arg0 & 0x07FF) - (arg0 & 0x0800);
+
+    avrjs_debug_printf("rjmp\t%03x:\t\t%d ", arg0, offs);
+
+    avr->pc = (avr->pc + offs) + 1;
 }
 
 void avr_ins_rcall(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
     (void) arg1;
+    const int16_t offs = (arg0 & 0x07FF) - (arg0 & 0x0800);
+
+    avrjs_debug_printf("rcall\t%03x:\t\t%d ", arg0, offs);
+
     avr->pc += 1;
     uint8_t i;
     for (i = avr->pc_size - 1; i < avr->pc_size; --i)
@@ -1572,12 +1936,13 @@ void avr_ins_rcall(struct avr * const avr, uint16_t arg0, uint16_t arg1)
         avr_push(&(avr->dmem), avr->pc >> (i << 3));
     }
 
-    avr->pc += arg0 & 0x07FF;
-    avr->pc -= arg0 & 0x0800;
+    avr->pc += offs;
 }
 
 void avr_ins_ldi(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
+    avrjs_debug_printf("ldi\t%02x,\t%02x:\t%u ", arg0, arg1, arg1);
+
     arg0 += 16;
     avr_dmem_write(&(avr->dmem), arg0, arg1);
 
@@ -1586,10 +1951,14 @@ void avr_ins_ldi(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_brbs(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    if (avr_sreg_read_bit(&(avr->dmem), arg0) != 0)
+    const uint8_t bit = avr_sreg_read_bit(&(avr->dmem), arg0);
+    const int8_t offs = (arg1 & 0x003F) - (arg1 & 0x0040);
+
+    avrjs_debug_printf("brbs\t%02x,\t%02x:\t%u, %d ", arg0, arg1, bit, offs);
+
+    if (bit != 0)
     {
-        avr->pc += arg1 & 0x003F;
-        avr->pc -= arg1 & 0x0040;
+        avr->pc += offs;
     }
 
     ++avr->pc;
@@ -1597,10 +1966,14 @@ void avr_ins_brbs(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_brbc(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    if (avr_sreg_read_bit(&(avr->dmem), arg0) == 0)
+    const uint8_t bit = avr_sreg_read_bit(&(avr->dmem), arg0);
+    const int8_t offs = (arg1 & 0x003F) - (arg1 & 0x0040);
+
+    avrjs_debug_printf("brbc\t%02x,\t%02x:\t%u, %d ", arg0, arg1, bit, offs);
+
+    if (bit == 0)
     {
-        avr->pc += arg1 & 0x003F;
-        avr->pc -= arg1 & 0x0040;
+        avr->pc += offs;
     }
 
     ++avr->pc;
@@ -1608,23 +1981,32 @@ void avr_ins_brbc(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_bld(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    if (avr_sreg_read_bit(&(avr->dmem), AVR_SREG_TRANSFER_BIT) != 0)
+    const uint8_t bit = avr_sreg_read_bit(&(avr->dmem), AVR_SREG_TRANSFER_BIT);
+    uint8_t val;
+
+    if (bit != 0)
     {
-        avr_dmem_write(&(avr->dmem), arg1, avr_dmem_read(&(avr->dmem), arg1)
-                       | (1 << arg0));
+        val = avr_dmem_read(&(avr->dmem), arg0) | (1 << arg1);
     }
     else
     {
-        avr_dmem_write(&(avr->dmem), arg1, avr_dmem_read(&(avr->dmem), arg1)
-                       & ~(1 << arg0));
+        val = avr_dmem_read(&(avr->dmem), arg0) & ~(1 << arg1);
     }
+
+    avrjs_debug_printf("bld\t%02x,\t%02x:\t%u ", arg0, arg1, val);
+
+    avr_dmem_write(&(avr->dmem), arg0, val);
 
     ++avr->pc;
 }
 
 void avr_ins_bst(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    if ((avr_dmem_read(&(avr->dmem), arg0) & (1 << arg1)) != 0)
+    const uint8_t bit = avr_dmem_read(&(avr->dmem), arg0) & (1 << arg1);
+
+    avrjs_debug_printf("bst\t%02x,\t%02x:\t%u ", arg0, arg1, bit);
+
+    if (bit != 0)
     {
         avr_sreg_set_bit(&(avr->dmem), AVR_SREG_TRANSFER_BIT);
     }
@@ -1638,7 +2020,11 @@ void avr_ins_bst(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_sbrc(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    if ((avr_dmem_read(&(avr->dmem), arg0) & (1 << arg1)) == 0)
+    const uint8_t bit = avr_dmem_read(&(avr->dmem), arg0) & (1 << arg1);
+
+    avrjs_debug_printf("sbrc\t%02x,\t%02x:\t%u ", arg0, arg1, bit);
+
+    if (bit == 0)
     {
         avr_skip_next_instruction(avr);
     }
@@ -1650,7 +2036,11 @@ void avr_ins_sbrc(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 
 void avr_ins_sbrs(struct avr * const avr, uint16_t arg0, uint16_t arg1)
 {
-    if ((avr_dmem_read(&(avr->dmem), arg0) & (1 << arg1)) != 0)
+    const uint8_t bit = avr_dmem_read(&(avr->dmem), arg0) & (1 << arg1);
+
+    avrjs_debug_printf("sbrs\t%02x,\t%02x:\t%u ", arg0, arg1, bit);
+
+    if (bit != 0)
     {
         avr_skip_next_instruction(avr);
     }
@@ -1660,10 +2050,15 @@ void avr_ins_sbrs(struct avr * const avr, uint16_t arg0, uint16_t arg1)
     }
 }
 
-void avr_tick(struct avr * avr)
+void avr_tick(struct avr * const avr)
 {
     struct avr_pmem_decoded* dec = &avr->pmem.decoded[avr->pc];
-    dec->function(avr, dec->arg0, dec->arg1);
+    avrjs_debug_printf("%04x\t", avr->pc * 2);
+    if (dec->function != 0)
+    {
+        dec->function(avr, dec->arg0, dec->arg1);
+    }
+    avrjs_debug_printf("\tsreg: %02x\n", avr->dmem.mem[avr->dmem.sreg_loc]);
     if (avr->interrupt_delay != 0)
     {
         --avr->interrupt_delay;
@@ -1677,7 +2072,7 @@ void avr_tick(struct avr * avr)
     }
 }
 
-void avr_init(struct avr* avr)
+void avr_init(struct avr* const avr, const struct avr_callbacks callbacks)
 {
     static const struct avr_instruction instructions[] = {
         {.pattern = 0x0000, .mask = 0xFFFF, .length = 1,
@@ -1990,6 +2385,5 @@ void avr_init(struct avr* avr)
     avr->asleep = 0;
     avr->interrupt_delay = 0;
     avr->interrupt_vector = 0;
-    avr->sleep_cb = 0;
-    avr->sleep_cb_arg = 0;
+    avr->callbacks = callbacks;
 }

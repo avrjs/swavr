@@ -60,17 +60,29 @@
 #define ATMEGA328_INT_VECT_USART0_UDRE (0x26)
 #define ATMEGA328_INT_VECT_USART0_TXC (0x28)
 
+struct atmega328_callbacks
+{
+    void (*sleep)(void*, uint8_t);
+    void* sleep_arg;
+    void(*uart0)(void*, uint8_t);
+    void* uart0_arg;
+};
+
+struct atmega328_config
+{
+    unsigned char bootsz;
+    unsigned char bootrst;
+};
+
 struct atmega328
 {
-    void (*sleep_cb)(void*, uint8_t);
-    void* sleep_cb_arg;
+    struct atmega328_callbacks callbacks;
+    struct atmega328_config config;
     uint8_t dmem[ATMEGA328_DMEM_SIZE];
-    struct avr_dmem_cb callbacks[ATMEGA328_IO_REGISTERS_LENGTH];
+    struct avr_dmem_cb dmem_callbacks[ATMEGA328_IO_REGISTERS_LENGTH];
     struct avr_pmem_decoded decoded[ATMEGA328_PMEM_SIZE];
     uint16_t pmem[ATMEGA328_PMEM_SIZE];
     struct avr avr;
-    void(*uart0_cb)(void*, uint8_t);
-    void* uart0_cb_arg;
     uint8_t uart0_rx_fifo;
     uint8_t uart0_rx_errs; // these are the errors that get shifted with the
     // data directly above
@@ -78,6 +90,7 @@ struct atmega328
     uint8_t uart1_rx_fifo;
     uint8_t uart1_rx_errs;
     unsigned char uart1_rx_fifo_state;
+
 };
 
 void atmega328_pmem_write_byte(void* const pmem, const uint32_t address,
@@ -86,7 +99,9 @@ void atmega328_tick(struct atmega328 * const mega);
 void atmega328_uart0_write(struct atmega328 * const mega,
                             const uint8_t value);
 void atmega328_reinit(struct atmega328 * const mega);
-void atmega328_init(struct atmega328 * const mega);
+void atmega328_init(struct atmega328 * const mega,
+    const struct atmega328_callbacks callbacks,
+    const struct atmega328_config config);
 int atmega328_load_hex(struct atmega328 * const mega,
                        const char* const filename);
 

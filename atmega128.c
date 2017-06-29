@@ -167,7 +167,7 @@ uint8_t atmega128_udr0_read_cb(void* arg, uint8_t value)
 void atmega128_udr0_write_cb(void* arg, uint8_t value)
 {
     struct atmega128* const mega = (struct atmega128*) arg;
-    mega->uart0_cb(mega->uart0_cb_arg, value);
+    mega->callbacks.uart0(mega->callbacks.uart0_arg, value);
     // trigger interrupts
     atmega128_set_txc0(mega);
     atmega128_set_udre0(mega);
@@ -213,18 +213,35 @@ void atmega128_init_regs(struct avr_dmem * const dmem)
     dmem->mem[ATMEGA128_UCSR0C_LOC] = 0x06;
 }
 
+static uint32_t atmega128_boot_reset_addr(struct atmega128 * const mega) {
+    switch (mega->config.bootsz)
+    {
+    case 0:
+        return 0xF000;
+    case 1:
+        return 0xF800;
+    case 2:
+        return 0xFC00;
+    case 3:
+        return 0xFE00;
+    }
+    return 0;
+}
+
+static void atmega128_init_pc(struct atmega128 * const mega) {
+    mega->avr.pc = (mega->config.bootrst != 0) ? 0 :
+        atmega128_boot_reset_addr(mega);
+}
+
 void atmega128_reinit(struct atmega128 * const mega)
 {
-    memset(mega->avr.dmem.mem, 0, mega->avr.dmem.size *
-           sizeof (*mega->avr.dmem.mem));
-    memset(mega->avr.pmem.decoded, 0, mega->avr.pmem.size *
-           sizeof (*mega->avr.pmem.decoded));
-    memset(mega->avr.pmem.mem, 0, mega->avr.pmem.size *
-           sizeof (*mega->avr.pmem.mem));
+    struct avr* const avr = &(mega->avr);
+    memset(avr->dmem.mem, 0, avr->dmem.size * sizeof (*avr->dmem.mem));
+    memset(avr->pmem.decoded, 0, avr->pmem.size * sizeof (*avr->pmem.decoded));
+    memset(avr->pmem.mem, 0, avr->pmem.size * sizeof (*avr->pmem.mem));
 
     atmega128_init_regs(&mega->avr.dmem);
-
-    mega->avr.pc = 0;
+    atmega128_init_pc(mega);
 }
 
 void atmega128_sleep_cb(void* arg, uint8_t sleep)
@@ -232,14 +249,29 @@ void atmega128_sleep_cb(void* arg, uint8_t sleep)
     struct atmega128* mega = (struct atmega128*) arg;
     if ((mega->avr.dmem.mem[ATMEGA128_MCUCR_LOC] & (1 << 5)) != 0)
     {
-        mega->sleep_cb(mega->sleep_cb_arg, sleep);
+        mega->callbacks.sleep(mega->callbacks.sleep_arg, sleep);
     }
 }
 
-void atmega128_init(struct atmega128* const mega)
+static uint32_t atmega128_iv_cb(void* arg, uint32_t iv)
+{
+    struct atmega128* mega = (struct atmega128*) arg;
+    if ((mega->avr.dmem.mem[ATMEGA128_MCUCR_LOC] & (1 << 1)) != 0)
+    {
+        iv += atmega128_boot_reset_addr(mega);
+    }
+    return iv;
+}
+
+void atmega128_init(struct atmega128 * const mega,
+    const struct atmega128_callbacks callbacks,
+    const struct atmega128_config config)
 {
     mega->uart0_rx_fifo_state = 0;
     mega->uart1_rx_fifo_state = 0;
+
+    mega->config = config;
+    mega->callbacks = callbacks;
 
     struct avr* const avr = &(mega->avr);
     struct avr_dmem* const dmem = &(avr->dmem);
@@ -247,7 +279,7 @@ void atmega128_init(struct atmega128* const mega)
 
     // give access to arrays
     dmem->mem = mega->dmem;
-    dmem->callbacks = mega->callbacks;
+    dmem->callbacks = mega->dmem_callbacks;
     dmem->size = ATMEGA128_DMEM_SIZE;
 
     pmem->mem = mega->pmem;
@@ -272,10 +304,15 @@ void atmega128_init(struct atmega128* const mega)
     dmem->rampd_loc = ATMEGA128_RAMPD_LOC;
     dmem->eind_loc = ATMEGA128_EIND_LOC;
 
-    avr_init(avr);
+    struct avr_callbacks avr_callbacks = {
+        .sleep = &atmega128_sleep_cb,
+        .sleep_arg = mega,
+        .iv = &atmega128_iv_cb,
+        .iv_arg = mega
+    };
 
-    avr->sleep_cb = &atmega128_sleep_cb;
-    avr->sleep_cb_arg = mega;
+    avr_init(avr, avr_callbacks);
+    atmega128_init_pc(mega);
 
     // initialise version specific callbacks
     dmem->callbacks[ATMEGA128_UDR0_LOC -

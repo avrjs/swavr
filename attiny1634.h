@@ -61,18 +61,22 @@
 #define ATTINY1634_INT_VECT_USART0_DRE (0x22)
 #define ATTINY1634_INT_VECT_USART0_TXC (0x24)
 
+struct attiny1634_callbacks
+{
+    void (*sleep)(void*, uint8_t);
+    void* sleep_arg;
+    void(*uart0)(void*, uint8_t);
+    void* uart0_arg;
+};
 
 struct attiny1634
 {
-    void (*sleep_cb)(void*, uint8_t);
-    void* sleep_cb_arg;
+    struct attiny1634_callbacks callbacks;
     uint8_t dmem[ATTINY1634_DMEM_SIZE];
-    struct avr_dmem_cb callbacks[ATTINY1634_IO_REGISTERS_LENGTH];
+    struct avr_dmem_cb dmem_callbacks[ATTINY1634_IO_REGISTERS_LENGTH];
     struct avr_pmem_decoded decoded[ATTINY1634_PMEM_SIZE];
     uint16_t pmem[ATTINY1634_PMEM_SIZE];
     struct avr avr;
-    void(*uart0_cb)(void*, uint8_t);
-    void* uart0_cb_arg;
     uint8_t uart0_rx_fifo;
     uint8_t uart0_rx_errs; // these are the errors that get shifted with the
     // data directly above
@@ -88,7 +92,8 @@ void attiny1634_tick(struct attiny1634 * const tiny);
 void attiny1634_uart0_write(struct attiny1634 * const tiny,
                             const uint8_t value);
 void attiny1634_reinit(struct attiny1634 * const tiny);
-void attiny1634_init(struct attiny1634 * const tiny);
+void attiny1634_init(struct attiny1634 * const tiny,
+    const struct attiny1634_callbacks callbacks);
 int attiny1634_load_hex(struct attiny1634 * const core,
                         const char* const filename);
 

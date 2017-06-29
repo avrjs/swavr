@@ -168,7 +168,7 @@ uint8_t attiny1634_udr0_read_cb(void* arg, uint8_t value)
 void attiny1634_udr0_write_cb(void* arg, uint8_t value)
 {
     struct attiny1634* tiny = (struct attiny1634*) arg;
-    tiny->uart0_cb(tiny->uart0_cb_arg, value);
+    tiny->callbacks.uart0(tiny->callbacks.uart0_arg, value);
     // trigger interrupts
     attiny1634_set_txc0(tiny);
     attiny1634_set_udre0(tiny);
@@ -217,15 +217,12 @@ void attiny1634_init_regs(struct avr_dmem * const dmem)
 
 void attiny1634_reinit(struct attiny1634 * const tiny)
 {
-    memset(tiny->avr.dmem.mem, 0, tiny->avr.dmem.size *
-           sizeof (*tiny->avr.dmem.mem));
-    memset(tiny->avr.pmem.decoded, 0, tiny->avr.pmem.size *
-           sizeof (*tiny->avr.pmem.decoded));
-    memset(tiny->avr.pmem.mem, 0, tiny->avr.pmem.size *
-           sizeof (*tiny->avr.pmem.mem));
+    struct avr* const avr = &(tiny->avr);
+    memset(avr->dmem.mem, 0, avr->dmem.size * sizeof (*avr->dmem.mem));
+    memset(avr->pmem.decoded, 0, avr->pmem.size * sizeof (*avr->pmem.decoded));
+    memset(avr->pmem.mem, 0, avr->pmem.size * sizeof (*avr->pmem.mem));
 
     attiny1634_init_regs(&tiny->avr.dmem);
-
     tiny->avr.pc = 0;
 }
 
@@ -234,14 +231,22 @@ void attiny1634_sleep_cb(void* arg, uint8_t sleep)
     struct attiny1634* tiny = (struct attiny1634*) arg;
     if ((tiny->avr.dmem.mem[ATTINY1634_MCUCR_LOC] & (1 << 4)) != 0)
     {
-        tiny->sleep_cb(tiny->sleep_cb_arg, sleep);
+        tiny->callbacks.sleep(tiny->callbacks.sleep_arg, sleep);
     }
 }
 
-void attiny1634_init(struct attiny1634 * const tiny)
+static uint32_t attiny1634_iv_cb(void* arg, uint32_t iv)
+{
+    return iv;
+}
+
+void attiny1634_init(struct attiny1634 * const tiny,
+    const struct attiny1634_callbacks callbacks )
 {
     tiny->uart0_rx_fifo_state = 0;
     tiny->uart1_rx_fifo_state = 0;
+
+    tiny->callbacks = callbacks;
 
     struct avr * const avr = &(tiny->avr);
     struct avr_dmem * const dmem = &(avr->dmem);
@@ -249,7 +254,7 @@ void attiny1634_init(struct attiny1634 * const tiny)
 
     // give access to arrays
     dmem->mem = tiny->dmem;
-    dmem->callbacks = tiny->callbacks;
+    dmem->callbacks = tiny->dmem_callbacks;
     dmem->size = ATTINY1634_DMEM_SIZE;
 
     pmem->mem = tiny->pmem;
@@ -274,10 +279,15 @@ void attiny1634_init(struct attiny1634 * const tiny)
     dmem->rampd_loc = ATTINY1634_RAMPD_LOC;
     dmem->eind_loc = ATTINY1634_EIND_LOC;
 
-    avr_init(avr);
+    struct avr_callbacks avr_callbacks = {
+        .sleep = &attiny1634_sleep_cb,
+        .sleep_arg = tiny,
+        .iv = &attiny1634_iv_cb,
+        .iv_arg = 0
+    };
 
-    avr->sleep_cb = &attiny1634_sleep_cb;
-    avr->sleep_cb_arg = tiny;
+    avr_init(avr, avr_callbacks);
+    tiny->avr.pc = 0;
 
     // initialise version specific callbacks
     dmem->callbacks[ATTINY1634_UDR0_LOC -
